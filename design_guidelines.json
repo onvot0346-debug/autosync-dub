@@ -1,0 +1,88 @@
+{
+  "theme": "dark",
+  "archetype": "4 (Swiss & High-Contrast) - Dark Ink & Vermilion Custom",
+  "typography": {
+    "heading_font": "Bricolage Grotesque, sans-serif",
+    "body_font": "Manrope, sans-serif",
+    "chinese_text_font": "'Noto Serif SC', serif",
+    "scales": {
+      "h1": "text-4xl sm:text-5xl tracking-tight font-bold",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-semibold",
+      "h3": "text-xl sm:text-2xl font-medium",
+      "body": "text-base leading-relaxed",
+      "small": "text-sm text-muted-foreground",
+      "overline": "text-xs uppercase tracking-[0.2em]"
+    }
+  },
+  "colors": {
+    "background": "#050505",
+    "surface": "#121212",
+    "surface_hover": "#1A1A1A",
+    "border": "#27272A",
+    "primary": "#E63946",
+    "primary_hover": "#C1121F",
+    "text_main": "#F8F9FA",
+    "text_muted": "#A1A1AA",
+    "success": "#2D6A4F",
+    "warning": "#F5CB5C",
+    "error": "#9B2226"
+  },
+  "layout_spacing": {
+    "container": "max-w-7xl mx-auto px-6 py-12",
+    "bento_grid": "grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8",
+    "upload_card": "col-span-full lg:col-span-8 p-10 lg:p-16",
+    "progress_card": "col-span-full lg:col-span-4 p-8",
+    "comparison_card": "col-span-full lg:col-span-7 p-8",
+    "preview_card": "col-span-full lg:col-span-5 p-8",
+    "history_section": "col-span-full mt-16"
+  },
+  "surface_strategies": {
+    "cards": "bg-[#121212] border border-[#27272A] rounded-xl shadow-sm",
+    "glass": "backdrop-blur-xl bg-black/60 border border-white/10",
+    "inputs": "bg-transparent border border-[#27272A] rounded-lg focus:border-[#E63946] focus:ring-1 focus:ring-[#E63946]"
+  },
+  "motion_interactions": {
+    "hover": "transition-all duration-300 ease-in-out",
+    "card_hover": "hover:-translate-y-1 hover:border-[#E63946]/30 hover:shadow-[0_8px_30px_rgb(230,57,70,0.05)]",
+    "button_active": "active:scale-95"
+  },
+  "components": {
+    "buttons": "rounded-lg px-6 py-3 font-medium flex items-center justify-center gap-2 transition-all",
+    "primary_button": "bg-[#E63946] text-white hover:bg-[#C1121F] hover:text-white shadow-[0_0_15px_rgba(230,57,70,0.2)]",
+    "secondary_button": "bg-[#1A1A1A] text-white border border-[#27272A] hover:border-[#E63946]/50 hover:bg-[#222]",
+    "progress_bar": "h-2 bg-[#27272A] rounded-full overflow-hidden, indicator: bg-[#E63946] transition-all duration-500",
+    "toast": "bg-[#121212] border border-[#27272A] text-white",
+    "tabs": "bg-[#1A1A1A] p-1 rounded-lg border border-[#27272A]"
+  },
+  "media_assets": {
+    "placeholder_videos": [
+      {
+        "url": "https://images.unsplash.com/photo-1758346971166-0aad9f0d4b80?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NjV8MHwxfHNlYXJjaHwzfHxhc2lhbiUyMHN0cmVldCUyMGZvb2QlMjBjb29raW5nfGVufDB8fHx8MTc3ODI3Mjk0Nnww&ixlib=rb-4.1.0&q=85",
+        "category": "thumbnail",
+        "description": "Asian street food cooking video thumbnail"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1710513036120-2c498b955b8b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwxfHxjaGluZXNlJTIwbGFuZHNjYXBlJTIwY2l0eXxlbnwwfHx8fDE3NzgyNzI5NDZ8MA&ixlib=rb-4.1.0&q=85",
+        "category": "thumbnail",
+        "description": "Chinese landscape video thumbnail"
+      },
+      {
+        "url": "https://images.pexels.com/photos/17943576/pexels-photo-17943576.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "category": "thumbnail",
+        "description": "Chinese city landscape video thumbnail"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Ensure the entire UI is in Turkish. This is a single-page SaaS utility tool.",
+    "Use 'Bricolage Grotesque' for all headings and 'Manrope' for body text. AVOID Inter, Roboto, and Space Grotesk.",
+    "DO NOT use purple or violet gradients. Stick to the Dark Ink background (#050505) with Vermilion Red (#E63946) accents to hint at Chinese seal stamps.",
+    "Implement the 6-stage pipeline (Ses Ayrıştırma -> Transkripsiyon -> Çeviri -> Seslendirme -> Senkronizasyon -> Birleştirme) using a vertical or horizontal stepper with active, completed, and pending states. Use shadcn Progress.",
+    "Build a large drag-and-drop zone for MP4/MOV uploads with dashed borders and hover states. Add clear Turkish instructions.",
+    "For the comparison section, use shadcn ScrollArea to show Chinese original text and Turkish translation side-by-side. Try to use a serif font stack for the Chinese text to emulate traditional typography.",
+    "Add a processed video preview player area with an 'MP4 İndir' download button (Primary Button style).",
+    "Implement a 'Geçmiş İşlemler' (Past Processes) list at the bottom using the provided thumbnail images in a grid layout.",
+    "Use shadcn sonner (toast) for all Turkish error and success notifications (e.g., 'Video başarıyla yüklendi', 'İşlem tamamlandı').",
+    "Add `data-testid` attributes to all interactive elements for automated testing (e.g., `data-testid=\"upload-zone\"`, `data-testid=\"download-btn\"`)."
+  ]
+}
