@@ -36,6 +36,40 @@ log = logging.getLogger("dubbing")
 WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
 TTS_VOICE = os.environ.get("TTS_VOICE", "tr-TR-AhmetNeural")  # professional male
 
+
+# ------------------------------------------------------------------
+# Resolve ffmpeg / ffprobe binaries (static-ffmpeg bundled, persistent in venv)
+# ------------------------------------------------------------------
+def _resolve_ffmpeg_binaries():
+    # Prefer system if available (faster startup), fall back to static-ffmpeg
+    sys_ffmpeg = shutil.which("ffmpeg")
+    sys_ffprobe = shutil.which("ffprobe")
+    if sys_ffmpeg and sys_ffprobe:
+        return sys_ffmpeg, sys_ffprobe
+    try:
+        from static_ffmpeg import run as _sf
+        ff, fp = _sf.get_or_fetch_platform_executables_else_raise()
+        # Make sure pydub also finds ffmpeg
+        os.environ["PATH"] = os.path.dirname(ff) + os.pathsep + os.environ.get("PATH", "")
+        return ff, fp
+    except Exception as e:
+        log.error("Could not resolve ffmpeg/ffprobe: %s", e)
+        return "ffmpeg", "ffprobe"  # last-resort, will fail clearly later
+
+
+FFMPEG_BIN, FFPROBE_BIN = _resolve_ffmpeg_binaries()
+log.info(f"Using ffmpeg: {FFMPEG_BIN}")
+log.info(f"Using ffprobe: {FFPROBE_BIN}")
+
+# Make sure pydub uses the same ffmpeg
+try:
+    from pydub import AudioSegment as _AS
+    _AS.converter = FFMPEG_BIN
+    _AS.ffmpeg = FFMPEG_BIN
+    _AS.ffprobe = FFPROBE_BIN
+except Exception:
+    pass
+
 # Lazy-loaded model cache
 _whisper_model = None
 
@@ -99,10 +133,10 @@ def separate_vocals(input_wav: Path, work_dir: Path) -> Dict[str, Path]:
         vocals = work_dir / "vocals.wav"
         music = work_dir / "music.wav"
         # Vocals = original (whisper handles speech-with-music decently)
-        _run(["ffmpeg", "-y", "-i", str(input_wav), "-c:a", "pcm_s16le", str(vocals)])
+        _run([FFMPEG_BIN, "-y", "-i", str(input_wav), "-c:a", "pcm_s16le", str(vocals)])
         # Music track = original at -10dB so the new Turkish voice dominates the mix
         _run([
-            "ffmpeg", "-y", "-i", str(input_wav),
+            FFMPEG_BIN, "-y", "-i", str(input_wav),
             "-af", "volume=-10dB",
             "-c:a", "pcm_s16le", str(music),
         ])
@@ -244,7 +278,7 @@ def mix_and_mux(
     mixed_wav = work / "mixed_audio.wav"
     # Mix two tracks with ffmpeg
     _run([
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-i", str(music_wav),
         "-i", str(turkish_vocal_wav),
         "-filter_complex",
@@ -254,7 +288,7 @@ def mix_and_mux(
     ])
     # Mux into video (replace audio)
     _run([
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-i", str(original_video),
         "-i", str(mixed_wav),
         "-c:v", "copy",
@@ -271,7 +305,7 @@ def mix_and_mux(
 # ------------------------------------------------------------------
 def get_video_duration(video_path: Path) -> float:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        [FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
         capture_output=True, text=True, check=True,
     )
