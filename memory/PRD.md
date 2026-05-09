@@ -17,9 +17,12 @@
 - **MongoDB:** `jobs` koleksiyonu (id, filename, status, stage, progress, segments, output_url, timestamps).
 
 ## What's Implemented (2026-02)
-- [x] Tüm pipeline aşamaları çalışıyor (uçtan uca test edildi: ~25 sn'de 9 saniyelik video Türkçe dublajlı oldu).
+- [x] Tüm pipeline aşamaları çalışıyor.
+- [x] **GPT-4o ile bağlam-aware çeviri** (Emergent Universal Key) — tüm transkript tek seferde, mühendislik/teknik terimler korunarak çevriliyor. Hata durumunda `deep-translator` fallback.
+- [x] **Whisper `medium`** (769 MB) — yüksek kalite Çince transkripsiyon, mühendislik terim ipuçlu (initial_prompt) prompt.
 - [x] 6-aşamalı progress stepper, Türkçe arayüz, koyu tema, vermilion (kırmızı) Çin mührü esintili tasarım.
 - [x] Segment-bazlı time-stretch ile orijinal süreye senkronizasyon (0.7-1.6x clamp).
+- [x] **Persistent ffmpeg/ffprobe** via `static-ffmpeg` (venv kalıcı, container restart sonrası bile çalışır).
 - [x] Mühendislik terim sözlüğü (`glossary.py`).
 - [x] Geçmiş işlemler listesi + silme + tekrar açma.
 

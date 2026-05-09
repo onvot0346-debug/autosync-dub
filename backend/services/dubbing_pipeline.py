@@ -27,13 +27,14 @@ from deep_translator import GoogleTranslator
 from pydub import AudioSegment
 
 from .glossary import apply_glossary
+from .gpt_translator import translate_with_gpt4o
 
 log = logging.getLogger("dubbing")
 
 # ------------------------------------------------------------------
 # Config
 # ------------------------------------------------------------------
-WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "medium")
 TTS_VOICE = os.environ.get("TTS_VOICE", "tr-TR-AhmetNeural")  # professional male
 
 
@@ -167,23 +168,44 @@ def transcribe_chinese(vocals_wav: Path) -> List[Dict]:
 
 
 # ------------------------------------------------------------------
-# Stage 4 — Translate each segment to Turkish
+# Stage 4 — Translate each segment to Turkish (GPT-4o context-aware,
+# with deep-translator fallback)
 # ------------------------------------------------------------------
 def translate_segments(segments: List[Dict]) -> List[Dict]:
     if not segments:
         return segments
-    translator = GoogleTranslator(source="zh-CN", target="tr")
+
+    # Pre-fill text_tr empty so we can detect what GPT-4o filled
+    for s in segments:
+        s["text_tr"] = ""
+
+    # 1) Try GPT-4o whole-transcript pass (highest quality)
+    used_gpt = False
+    try:
+        asyncio.run(translate_with_gpt4o(segments))
+        used_gpt = any(s.get("text_tr") for s in segments)
+        log.info("GPT-4o translation: %s segments translated", sum(1 for s in segments if s.get("text_tr")))
+    except Exception as e:
+        log.warning("GPT-4o translator threw: %s", e)
+
+    # 2) Per-segment fallback for any still-empty entries
+    missing = [s for s in segments if not s.get("text_tr") and s.get("text_zh", "").strip()]
+    if missing:
+        log.info("Falling back to deep-translator for %d untranslated segments", len(missing))
+        translator = GoogleTranslator(source="zh-CN", target="tr")
+        for seg in missing:
+            try:
+                tr = translator.translate(seg["text_zh"]) or ""
+            except Exception as e:
+                log.warning(f"Translate failed for seg {seg['id']}: {e}")
+                tr = ""
+            seg["text_tr"] = tr
+
+    # 3) Apply glossary corrections
     for seg in segments:
-        zh = seg["text_zh"]
-        if not zh:
-            seg["text_tr"] = ""
-            continue
-        try:
-            tr = translator.translate(zh) or ""
-        except Exception as e:
-            log.warning(f"Translate failed for seg {seg['id']}: {e}")
-            tr = ""
-        seg["text_tr"] = apply_glossary(zh, tr)
+        seg["text_tr"] = apply_glossary(seg.get("text_zh", ""), seg.get("text_tr", ""))
+
+    log.info("Translation complete (gpt4o_used=%s)", used_gpt)
     return segments
 
 
