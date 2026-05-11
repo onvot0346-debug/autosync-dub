@@ -36,11 +36,14 @@ const STAGES = [
 
 export default function DubbingStudio() {
   const [voices, setVoices] = useState([]);
+  const [languages, setLanguages] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState("tr-TR-AhmetNeural");
+  const [selectedLang, setSelectedLang] = useState("auto");
   const [job, setJob] = useState(null);
   const [history, setHistory] = useState([]);
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [clearingErrors, setClearingErrors] = useState(false);
   const fileInputRef = useRef(null);
   const pollRef = useRef(null);
 
@@ -50,6 +53,16 @@ export default function DubbingStudio() {
       const r = await axios.get(`${API}/voices`);
       setVoices(r.data.voices || []);
       if (r.data.default) setSelectedVoice(r.data.default);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  const fetchLanguages = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/languages`);
+      setLanguages(r.data.languages || []);
+      if (r.data.default) setSelectedLang(r.data.default);
     } catch (e) {
       console.error(e);
     }
@@ -104,7 +117,7 @@ export default function DubbingStudio() {
     const fd = new FormData();
     fd.append("file", file);
     try {
-      const r = await axios.post(`${API}/upload?voice=${encodeURIComponent(selectedVoice)}`, fd, {
+      const r = await axios.post(`${API}/upload?voice=${encodeURIComponent(selectedVoice)}&language=${encodeURIComponent(selectedLang)}`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       toast.success("Video yüklendi, işleme başlandı.");
@@ -132,9 +145,10 @@ export default function DubbingStudio() {
   // ---------- Lifecycle ----------
   useEffect(() => {
     fetchVoices();
+    fetchLanguages();
     fetchHistory();
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchVoices, fetchHistory]);
+  }, [fetchVoices, fetchLanguages, fetchHistory]);
 
   const reopenJob = async (id) => {
     const r = await axios.get(`${API}/job/${id}`);
@@ -155,6 +169,25 @@ export default function DubbingStudio() {
     }
   };
 
+  const clearErrors = async () => {
+    setClearingErrors(true);
+    try {
+      const r = await axios.post(`${API}/jobs/clear-errors`);
+      const n = r.data.deleted || 0;
+      if (n > 0) {
+        toast.success(`${n} hatalı kayıt temizlendi.`);
+      } else {
+        toast.info("Temizlenecek hatalı kayıt yok.");
+      }
+      if (job?.status === "error") setJob(null);
+      fetchHistory();
+    } catch (e) {
+      toast.error("Hatalar temizlenemedi.");
+    } finally {
+      setClearingErrors(false);
+    }
+  };
+
   // ---------- UI ----------
   const currentStageIdx = job ? STAGES.findIndex((s) => s.key === job.stage) : -1;
 
@@ -169,7 +202,7 @@ export default function DubbingStudio() {
               Dublaj Stüdyosu
             </p>
             <h1 className="font-display text-3xl sm:text-4xl font-bold leading-tight">
-              Çince Videoyu <span style={{ color: "#E63946" }}>Türkçe</span> Dublajla
+              Videoyu <span style={{ color: "#E63946" }}>Türkçe</span> Dublajla
             </h1>
           </div>
         </div>
@@ -183,19 +216,27 @@ export default function DubbingStudio() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
         {/* Upload */}
         <section className="card-base p-8 lg:p-12 col-span-1 lg:col-span-8" data-testid="upload-card">
-          <div className="flex items-start justify-between mb-6">
+          <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
             <div>
               <h2 className="font-display text-2xl font-semibold">Video Yükle</h2>
               <p className="text-sm text-muted mt-1">
                 MP4 / MOV / M4V / WEBM (önerilen 2-5 dakika).
               </p>
             </div>
-            <VoiceSelector
-              voices={voices}
-              value={selectedVoice}
-              onChange={setSelectedVoice}
-              disabled={uploading || (job && job.status === "running")}
-            />
+            <div className="flex items-end gap-3 flex-wrap">
+              <LanguageSelector
+                languages={languages}
+                value={selectedLang}
+                onChange={setSelectedLang}
+                disabled={uploading || (job && job.status === "running")}
+              />
+              <VoiceSelector
+                voices={voices}
+                value={selectedVoice}
+                onChange={setSelectedVoice}
+                disabled={uploading || (job && job.status === "running")}
+              />
+            </div>
           </div>
 
           <div
@@ -231,7 +272,7 @@ export default function DubbingStudio() {
                   {uploading ? "Yükleniyor..." : "Video dosyasını buraya bırak veya tıkla"}
                 </p>
                 <p className="text-sm text-muted mt-1">
-                  Çince konuşmalı kısa videoları otomatik Türkçe dublajla.
+                  Çince, Vietnamca, İngilizce ve 20+ dilde otomatik Türkçe dublaj.
                 </p>
               </div>
             </div>
@@ -282,9 +323,25 @@ export default function DubbingStudio() {
               </p>
               <h3 className="font-display text-xl font-semibold mt-1">Önceki İşlemler</h3>
             </div>
-            <button onClick={fetchHistory} className="btn-secondary" data-testid="refresh-history-btn">
-              Yenile
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={clearErrors}
+                className="btn-secondary"
+                disabled={clearingErrors}
+                data-testid="clear-errors-btn"
+                title="Tüm hatalı kayıtları sil"
+              >
+                {clearingErrors ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+                Hataları Temizle
+              </button>
+              <button onClick={fetchHistory} className="btn-secondary" data-testid="refresh-history-btn">
+                Yenile
+              </button>
+            </div>
           </div>
           <HistoryList items={history} onOpen={reopenJob} onDelete={deleteJob} />
         </section>
@@ -301,18 +358,40 @@ export default function DubbingStudio() {
 /* ---------- Voice select ---------- */
 function VoiceSelector({ voices, value, onChange, disabled }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-col gap-1">
       <label className="text-xs uppercase tracking-[0.18em] text-muted">Ses</label>
       <select
         data-testid="voice-select"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        className="bg-[#1A1A1A] border border-[#27272A] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#E63946]"
+        className="bg-[#1A1A1A] border border-[#27272A] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#E63946] min-w-[140px]"
       >
         {voices.map((v) => (
           <option key={v.id} value={v.id}>
             {v.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/* ---------- Language select ---------- */
+function LanguageSelector({ languages, value, onChange, disabled }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-xs uppercase tracking-[0.18em] text-muted">Kaynak Dil</label>
+      <select
+        data-testid="language-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="bg-[#1A1A1A] border border-[#27272A] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#E63946] min-w-[160px]"
+      >
+        {languages.map((lng) => (
+          <option key={lng.code} value={lng.code}>
+            {lng.name}
           </option>
         ))}
       </select>
@@ -344,7 +423,7 @@ function ResultsView({ job }) {
                   <div className="col-span-12 md:col-span-2 text-xs text-muted font-mono">
                     {fmtTime(s.start)} → {fmtTime(s.end)}
                   </div>
-                  <div className="col-span-12 md:col-span-5 font-zh text-sm">{s.text_zh}</div>
+                  <div className="col-span-12 md:col-span-5 font-zh text-sm">{s.text_src || s.text_zh || ""}</div>
                   <div className="col-span-12 md:col-span-5 text-sm">{s.text_tr}</div>
                 </div>
               ))}
@@ -372,9 +451,10 @@ function ResultsView({ job }) {
             </div>
           )}
         </div>
-        <div className="mt-5 flex items-center justify-between gap-3">
+        <div className="mt-5 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-xs text-muted">
             {job.duration ? `${job.duration.toFixed(1)} sn` : "—"} · {job.voice}
+            {job.detected_language ? ` · ${langLabel(job.detected_language)}` : ""}
           </div>
           <a
             href={isDone ? downloadHref : "#"}
@@ -404,4 +484,16 @@ function fmtTime(s) {
   const m = Math.floor(s / 60).toString().padStart(2, "0");
   const sec = Math.floor(s % 60).toString().padStart(2, "0");
   return `${m}:${sec}`;
+}
+
+const LANG_LABELS = {
+  zh: "Çince", vi: "Vietnamca", en: "İngilizce", ja: "Japonca",
+  ko: "Korece", ru: "Rusça", ar: "Arapça", fa: "Farsça", hi: "Hintçe",
+  id: "Endonezce", th: "Tayca", fr: "Fransızca", de: "Almanca",
+  es: "İspanyolca", it: "İtalyanca", pt: "Portekizce", nl: "Hollandaca",
+  pl: "Lehçe", uk: "Ukraynaca", tr: "Türkçe",
+};
+function langLabel(code) {
+  if (!code) return "";
+  return LANG_LABELS[code] || code.toUpperCase();
 }

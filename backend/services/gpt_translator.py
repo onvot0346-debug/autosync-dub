@@ -23,47 +23,62 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage
 log = logging.getLogger("dubbing.gpt_translator")
 
 
-SYSTEM_PROMPT = """You are a professional simultaneous-interpretation translator for Chinese (Mandarin) to Turkish video dubbing.
+SYSTEM_PROMPT_TEMPLATE = """You are a professional simultaneous-interpretation translator from {source_language_name} to Turkish, specialized in video dubbing.
 
-You will receive an array of transcribed segments from a Chinese video. Each segment has:
+You will receive an array of transcribed segments from a {source_language_name} video. Each segment has:
   - id: integer
   - start: seconds (float)
   - end: seconds (float)
-  - text_zh: the original Chinese (may contain ASR / transcription errors — fix them using context!)
+  - text_src: the original {source_language_name} (may contain ASR / transcription errors — fix them using context!)
 
 Your task: produce a fluent, natural, high-quality Turkish translation suitable for spoken voice-over.
 
 CRITICAL RULES:
-1. **Use the WHOLE transcript as context.** Disambiguate words, fix obvious ASR mistakes (e.g. 事件 vs 世界 — pick the meaning that fits the surrounding context).
-2. **Preserve technical / engineering terminology.** Use canonical Turkish equivalents:
-   工程师→mühendis, 算法→algoritma, 数据库→veritabanı, 神经网络→sinir ağı,
-   人工智能→yapay zeka, 机械工程→makine mühendisliği, 电气工程→elektrik mühendisliği,
-   软件→yazılım, 服务器→sunucu, 传感器→sensör, 电压→voltaj, 扭矩→tork,
-   公差→tolerans, 螺栓→cıvata, 焊接→kaynak, 混凝土→beton, etc.
-3. **Match speaking duration.** Keep each Turkish sentence's character count within ±25% of what would naturally be spoken in the original duration. Don't add filler; trim where Turkish is more compact.
-4. **Natural Turkish.** Use idiomatic phrasing, correct grammar (vowel harmony, agglutination), proper punctuation. Avoid robotic / literal translations.
-5. **Tone:** professional, clear, suitable for narration (educational / engineering / vlog content).
-6. **Numbers & units:** keep numbers; convert units only if the original says so. Use Turkish number formatting.
-7. **Output JSON ONLY.** No prose. No markdown. No code fences.
+1. **Use the WHOLE transcript as context.** Disambiguate words, fix obvious ASR mistakes by using surrounding context.
+2. **Preserve technical / engineering / domain terminology** using canonical Turkish equivalents (e.g.
+   engineer→mühendis, algorithm→algoritma, database→veritabanı, sensor→sensör, voltage→voltaj,
+   neural network→sinir ağı, machine learning→makine öğrenimi, software→yazılım, etc.).
+3. **Match speaking duration.** Each Turkish sentence's character count should be within ±25% of what would naturally be spoken in the original duration. Don't add filler.
+4. **Natural Turkish.** Idiomatic phrasing, correct grammar (vowel harmony, agglutination), proper punctuation.
+5. **Tone:** professional, clear, suitable for narration (educational / engineering / vlog / drama / vlog).
+6. **Numbers & units:** keep numbers as-is; convert only if the original says so. Use Turkish number formatting.
+7. **Names of people / brands / places:** keep original spelling unless a well-known Turkish form exists.
+8. **Output JSON ONLY.** No prose. No markdown. No code fences.
 
 OUTPUT FORMAT (return EXACTLY this JSON structure):
-{
+{{
   "segments": [
-    {"id": 0, "text_tr": "..."},
-    {"id": 1, "text_tr": "..."},
+    {{"id": 0, "text_tr": "..."}},
+    {{"id": 1, "text_tr": "..."}},
     ...
   ]
+}}
+
+If a segment is empty or pure noise, set text_tr to "".
+"""
+
+
+_LANG_NAME_MAP = {
+    "zh": "Chinese (Mandarin)", "vi": "Vietnamese", "en": "English",
+    "ja": "Japanese", "ko": "Korean", "ru": "Russian", "ar": "Arabic",
+    "fa": "Persian", "hi": "Hindi", "id": "Indonesian", "th": "Thai",
+    "fr": "French", "de": "German", "es": "Spanish", "it": "Italian",
+    "pt": "Portuguese", "nl": "Dutch", "pl": "Polish", "uk": "Ukrainian",
+    "tr": "Turkish",
 }
 
-If a segment is empty or noise, set text_tr to "".
-"""
+
+def _source_language_name(code: str) -> str:
+    if not code or code == "auto":
+        return "the source language (auto-detected)"
+    return _LANG_NAME_MAP.get(code, code)
 
 
 def _build_user_payload(segments: List[Dict]) -> str:
     """Compact JSON payload to feed into GPT-4o."""
     minimal = [
         {"id": s["id"], "start": round(s["start"], 2), "end": round(s["end"], 2),
-         "text_zh": s["text_zh"]}
+         "text_src": s.get("text_src") or s.get("text_zh", "")}
         for s in segments
     ]
     return json.dumps({"segments": minimal}, ensure_ascii=False)
@@ -100,9 +115,11 @@ def _parse_response(raw: str) -> Dict[int, str]:
     return out
 
 
-async def translate_with_gpt4o(segments: List[Dict]) -> List[Dict]:
+async def translate_with_gpt4o(segments: List[Dict], source_lang: str = "auto") -> List[Dict]:
     """In-place enrich segments with `text_tr` produced by GPT-4o.
-    On failure: leave existing text_tr untouched (caller should fall back)."""
+    On failure: leave existing text_tr untouched (caller should fall back).
+    `source_lang` is an ISO-639-1 code (zh, vi, en, ...) or "auto".
+    """
     if not segments:
         return segments
     api_key = os.environ.get("EMERGENT_LLM_KEY")
@@ -110,10 +127,14 @@ async def translate_with_gpt4o(segments: List[Dict]) -> List[Dict]:
         log.warning("EMERGENT_LLM_KEY missing — skipping GPT-4o translation")
         return segments
 
+    system_msg = SYSTEM_PROMPT_TEMPLATE.format(
+        source_language_name=_source_language_name(source_lang)
+    )
+
     chat = LlmChat(
         api_key=api_key,
         session_id=f"dubbing-translate-{uuid.uuid4()}",
-        system_message=SYSTEM_PROMPT,
+        system_message=system_msg,
     ).with_model("openai", "gpt-4o")
 
     payload = _build_user_payload(segments)

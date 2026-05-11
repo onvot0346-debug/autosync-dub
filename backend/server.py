@@ -13,7 +13,7 @@ from typing import List, Optional, Any
 import uuid
 from datetime import datetime, timezone
 
-from services.dubbing_pipeline import run_pipeline, TTS_VOICE
+from services.dubbing_pipeline import run_pipeline, TTS_VOICE, SUPPORTED_LANGUAGES
 
 
 ROOT_DIR = Path(__file__).parent
@@ -48,7 +48,7 @@ class Segment(BaseModel):
     id: int
     start: float
     end: float
-    text_zh: str
+    text_src: str = ""
     text_tr: str = ""
 
 
@@ -62,6 +62,8 @@ class Job(BaseModel):
     progress: int = 0       # 0..100
     message: str = ""
     voice: str = TTS_VOICE
+    language: str = "auto"          # user-requested source language
+    detected_language: str = ""     # whisper-detected language (after transcription)
     duration: float = 0.0
     segments: List[Segment] = Field(default_factory=list)
     output_url: Optional[str] = None
@@ -105,7 +107,7 @@ async def _get_job(job_id: str) -> Optional[Job]:
 # ------------------------------------------------------------------
 # Background processing
 # ------------------------------------------------------------------
-def _process_job_sync(job_id: str, video_path: str, voice: str):
+def _process_job_sync(job_id: str, video_path: str, voice: str, language: str = "auto"):
     """Runs in a thread (BackgroundTasks). Uses sync MongoDB via pymongo."""
     from pymongo import MongoClient
     sync_client = MongoClient(os.environ["MONGO_URL"])
@@ -138,6 +140,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str):
             out_video=out_video,
             progress_cb=update,
             voice=voice,
+            language=language,
         )
         sync_db.jobs.update_one(
             {"id": job_id},
@@ -147,6 +150,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str):
                 "progress": 100,
                 "message": "Tamamlandı",
                 "duration": result["duration"],
+                "detected_language": result.get("detected_language", ""),
                 "segments": result["segments"],
                 "output_url": f"/api/job/{job_id}/download",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -197,25 +201,38 @@ async def list_voices():
     }
 
 
+@api_router.get("/languages")
+async def list_languages():
+    """Supported source languages for transcription."""
+    return {"languages": SUPPORTED_LANGUAGES, "default": "auto"}
+
+
 @api_router.post("/upload")
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     voice: str = TTS_VOICE,
+    language: str = "auto",
 ):
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(400, f"Desteklenmeyen format: {ext}. Kabul edilen: {sorted(ALLOWED_EXT)}")
 
-    job = Job(filename=file.filename, voice=voice, status="queued", stage="queued",
+    # Validate language code
+    valid_codes = {lng["code"] for lng in SUPPORTED_LANGUAGES}
+    if language not in valid_codes:
+        language = "auto"
+
+    job = Job(filename=file.filename, voice=voice, language=language,
+              status="queued", stage="queued",
               progress=0, message="Yükleme alındı")
     save_path = UPLOAD_DIR / f"{job.id}{ext}"
     with save_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
 
     await _save_job(job)
-    background_tasks.add_task(_process_job_sync, job.id, str(save_path), voice)
-    return {"job_id": job.id, "status": job.status}
+    background_tasks.add_task(_process_job_sync, job.id, str(save_path), voice, language)
+    return {"job_id": job.id, "status": job.status, "language": language}
 
 
 @api_router.get("/job/{job_id}")
@@ -268,6 +285,26 @@ async def delete_job(job_id: str):
     if work.exists():
         shutil.rmtree(work, ignore_errors=True)
     return {"ok": True}
+
+
+@api_router.post("/jobs/clear-errors")
+async def clear_error_jobs():
+    """Delete all errored jobs and their associated files. Returns count deleted."""
+    cursor = db.jobs.find({"status": "error"}, {"_id": 0, "id": 1})
+    ids = [d["id"] async for d in cursor]
+    for jid in ids:
+        for ext in ALLOWED_EXT:
+            p = UPLOAD_DIR / f"{jid}{ext}"
+            if p.exists():
+                p.unlink()
+        out = OUTPUT_DIR / f"{jid}.mp4"
+        if out.exists():
+            out.unlink()
+        work = WORK_DIR / jid
+        if work.exists():
+            shutil.rmtree(work, ignore_errors=True)
+    result = await db.jobs.delete_many({"status": "error"})
+    return {"deleted": result.deleted_count}
 
 
 # Include the router in the main app

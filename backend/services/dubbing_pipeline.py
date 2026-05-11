@@ -75,6 +75,35 @@ except Exception:
 _whisper_model = None
 
 
+# ------------------------------------------------------------------
+# Supported source languages (Whisper ISO-639-1 codes + Turkish names)
+# ------------------------------------------------------------------
+SUPPORTED_LANGUAGES: List[Dict[str, str]] = [
+    {"code": "auto", "name": "Otomatik Algıla"},
+    {"code": "zh", "name": "Çince"},
+    {"code": "vi", "name": "Vietnamca"},
+    {"code": "en", "name": "İngilizce"},
+    {"code": "ja", "name": "Japonca"},
+    {"code": "ko", "name": "Korece"},
+    {"code": "ru", "name": "Rusça"},
+    {"code": "ar", "name": "Arapça"},
+    {"code": "fa", "name": "Farsça"},
+    {"code": "hi", "name": "Hintçe"},
+    {"code": "id", "name": "Endonezce"},
+    {"code": "th", "name": "Tayca"},
+    {"code": "fr", "name": "Fransızca"},
+    {"code": "de", "name": "Almanca"},
+    {"code": "es", "name": "İspanyolca"},
+    {"code": "it", "name": "İtalyanca"},
+    {"code": "pt", "name": "Portekizce"},
+    {"code": "nl", "name": "Hollandaca"},
+    {"code": "pl", "name": "Lehçe"},
+    {"code": "uk", "name": "Ukraynaca"},
+    {"code": "tr", "name": "Türkçe"},
+]
+_LANG_NAMES_TR = {lng["code"]: lng["name"] for lng in SUPPORTED_LANGUAGES}
+
+
 def _get_whisper():
     global _whisper_model
     if _whisper_model is None:
@@ -151,67 +180,100 @@ def separate_vocals(input_wav: Path, work_dir: Path) -> Dict[str, Path]:
 
 
 # ------------------------------------------------------------------
-# Stage 3 — Transcribe Chinese with timestamps (segments)
+# Stage 3 — Transcribe speech with timestamps (segments)
+#   Supports auto language detection (language="auto" or None)
 # ------------------------------------------------------------------
-def transcribe_chinese(vocals_wav: Path) -> List[Dict]:
+def transcribe_audio(vocals_wav: Path, language: Optional[str] = None,
+                    initial_prompt: Optional[str] = None) -> Dict:
+    """Returns {"segments": [...], "language": "zh"|"vi"|...}.
+    If `language` is None or "auto", Whisper auto-detects.
+    """
     model = _get_whisper()
-    result = model.transcribe(
-        str(vocals_wav),
-        language="zh",
-        task="transcribe",
+    kwargs = dict(
         verbose=False,
-        condition_on_previous_text=False,
+        condition_on_previous_text=True,
+        task="transcribe",
     )
+    if language and language != "auto":
+        kwargs["language"] = language
+    if initial_prompt:
+        kwargs["initial_prompt"] = initial_prompt
+
+    result = model.transcribe(str(vocals_wav), **kwargs)
+    detected_lang = result.get("language", language or "unknown")
     segments = []
     for s in result.get("segments", []):
         segments.append({
             "id": s["id"],
             "start": float(s["start"]),
             "end": float(s["end"]),
-            "text_zh": s["text"].strip(),
+            "text_src": s["text"].strip(),
         })
-    return segments
+    return {"segments": segments, "language": detected_lang}
+
+
+# Backward-compat alias (kept temporarily; unused after refactor)
+def transcribe_chinese(vocals_wav: Path) -> List[Dict]:
+    return transcribe_audio(vocals_wav, language="zh")["segments"]
 
 
 # ------------------------------------------------------------------
 # Stage 4 — Translate each segment to Turkish (GPT-4o context-aware,
-# with deep-translator fallback)
+# with deep-translator fallback). Source language is dynamic.
 # ------------------------------------------------------------------
-def translate_segments(segments: List[Dict]) -> List[Dict]:
+# ISO-639-1 codes used by Whisper -> deep-translator equivalents
+_DEEP_LANG = {
+    "zh": "zh-CN", "vi": "vi", "en": "en", "ko": "ko", "ja": "ja",
+    "ru": "ru", "ar": "ar", "fr": "fr", "de": "de", "es": "es",
+    "it": "it", "pt": "pt", "hi": "hi", "id": "id", "th": "th",
+    "tr": "tr", "nl": "nl", "pl": "pl", "fa": "fa", "uk": "uk",
+}
+
+
+def translate_segments(segments: List[Dict], source_lang: str = "auto") -> List[Dict]:
     if not segments:
         return segments
 
     # Pre-fill text_tr empty so we can detect what GPT-4o filled
     for s in segments:
-        s["text_tr"] = ""
+        s.setdefault("text_tr", "")
 
-    # 1) Try GPT-4o whole-transcript pass (highest quality)
+    # 1) Try GPT-4o whole-transcript pass (highest quality, any source language)
     used_gpt = False
     try:
-        asyncio.run(translate_with_gpt4o(segments))
+        asyncio.run(translate_with_gpt4o(segments, source_lang=source_lang))
         used_gpt = any(s.get("text_tr") for s in segments)
-        log.info("GPT-4o translation: %s segments translated", sum(1 for s in segments if s.get("text_tr")))
+        log.info("GPT-4o translation: %s segments translated (src=%s)",
+                 sum(1 for s in segments if s.get("text_tr")), source_lang)
     except Exception as e:
         log.warning("GPT-4o translator threw: %s", e)
 
     # 2) Per-segment fallback for any still-empty entries
-    missing = [s for s in segments if not s.get("text_tr") and s.get("text_zh", "").strip()]
+    missing = [s for s in segments if not s.get("text_tr") and (s.get("text_src") or s.get("text_zh", "")).strip()]
     if missing:
         log.info("Falling back to deep-translator for %d untranslated segments", len(missing))
-        translator = GoogleTranslator(source="zh-CN", target="tr")
+        deep_src = _DEEP_LANG.get(source_lang, "auto")
+        try:
+            translator = GoogleTranslator(source=deep_src, target="tr")
+        except Exception:
+            translator = GoogleTranslator(source="auto", target="tr")
         for seg in missing:
+            src_text = seg.get("text_src") or seg.get("text_zh", "")
             try:
-                tr = translator.translate(seg["text_zh"]) or ""
+                tr = translator.translate(src_text) or ""
             except Exception as e:
                 log.warning(f"Translate failed for seg {seg['id']}: {e}")
                 tr = ""
             seg["text_tr"] = tr
 
-    # 3) Apply glossary corrections
+    # 3) Apply glossary corrections (Chinese-only; harmless for other languages)
     for seg in segments:
-        seg["text_tr"] = apply_glossary(seg.get("text_zh", ""), seg.get("text_tr", ""))
+        seg["text_tr"] = apply_glossary(
+            seg.get("text_src") or seg.get("text_zh", ""),
+            seg.get("text_tr", ""),
+        )
 
-    log.info("Translation complete (gpt4o_used=%s)", used_gpt)
+    log.info("Translation complete (gpt4o_used=%s, src=%s)", used_gpt, source_lang)
     return segments
 
 
@@ -349,8 +411,13 @@ def run_pipeline(
     out_video: Path,
     progress_cb: Callable[[str, int, Optional[str]], None],
     voice: str = TTS_VOICE,
+    language: Optional[str] = "auto",
 ) -> Dict:
-    """Run the full pipeline. progress_cb(stage, percent, message)."""
+    """Run the full pipeline. progress_cb(stage, percent, message).
+
+    Args:
+        language: ISO-639-1 code (zh, vi, en, ko, ja, ...) or "auto" for detection.
+    """
     work_dir.mkdir(parents=True, exist_ok=True)
 
     progress_cb("extract", 5, "Videodan ses çıkarılıyor")
@@ -360,11 +427,20 @@ def run_pipeline(
     progress_cb("separate", 15, "Vokal ve müzik ayrıştırılıyor")
     stems = separate_vocals(audio_wav, work_dir)
 
-    progress_cb("transcribe", 35, "Çince konuşma metne dökülüyor")
-    segments = transcribe_chinese(stems["vocals"])
+    lang_label = "otomatik algılanıyor" if (not language or language == "auto") else language.upper()
+    progress_cb("transcribe", 35, f"Konuşma metne dökülüyor ({lang_label})")
+    # Only use Chinese-tech initial prompt if user explicitly chose Chinese
+    initial_prompt = None
+    if language == "zh":
+        initial_prompt = "以下是普通话的句子。包含工程、机械、电气、软件、算法等技术术语。请使用简体字。"
+    tr_result = transcribe_audio(stems["vocals"], language=language, initial_prompt=initial_prompt)
+    segments = tr_result["segments"]
+    detected_language = tr_result["language"]
+    log.info("Transcription complete: %d segments, detected_language=%s",
+             len(segments), detected_language)
 
-    progress_cb("translate", 55, "Türkçeye çevriliyor")
-    segments = translate_segments(segments)
+    progress_cb("translate", 55, f"{_LANG_NAMES_TR.get(detected_language, detected_language)} → Türkçe çevriliyor")
+    segments = translate_segments(segments, source_lang=detected_language)
 
     progress_cb("tts", 75, "Türkçe seslendirme oluşturuluyor")
     turkish_vocal = synthesize_turkish_track(segments, work_dir, duration, voice=voice)
@@ -375,9 +451,11 @@ def run_pipeline(
     progress_cb("done", 100, "Tamamlandı")
     return {
         "duration": duration,
+        "detected_language": detected_language,
         "segments": [
             {"id": s["id"], "start": s["start"], "end": s["end"],
-             "text_zh": s["text_zh"], "text_tr": s.get("text_tr", "")}
+             "text_src": s.get("text_src") or s.get("text_zh", ""),
+             "text_tr": s.get("text_tr", "")}
             for s in segments
         ],
         "output": str(out_video),
