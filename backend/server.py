@@ -25,7 +25,7 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # Storage
-STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", str(ROOT_DIR / "storage")))
+STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", "/data/dubbing"))
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 WORK_DIR = STORAGE_DIR / "work"
 OUTPUT_DIR = STORAGE_DIR / "outputs"
@@ -165,6 +165,13 @@ def _process_job_sync(job_id: str, video_path: str, voice: str):
         )
     finally:
         sync_client.close()
+        # Auto-cleanup work dir to free disk (output + upload kept for download)
+        try:
+            work = WORK_DIR / job_id
+            if work.exists():
+                shutil.rmtree(work, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------
