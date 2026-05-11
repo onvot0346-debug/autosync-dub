@@ -37,8 +37,10 @@ const STAGES = [
 export default function DubbingStudio() {
   const [voices, setVoices] = useState([]);
   const [languages, setLanguages] = useState([]);
+  const [audioModes, setAudioModes] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState("tr-TR-AhmetNeural");
   const [selectedLang, setSelectedLang] = useState("auto");
+  const [selectedMode, setSelectedMode] = useState("dub_with_music");
   const [job, setJob] = useState(null);
   const [history, setHistory] = useState([]);
   const [dragOver, setDragOver] = useState(false);
@@ -117,9 +119,11 @@ export default function DubbingStudio() {
     const fd = new FormData();
     fd.append("file", file);
     try {
-      const r = await axios.post(`${API}/upload?voice=${encodeURIComponent(selectedVoice)}&language=${encodeURIComponent(selectedLang)}`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const r = await axios.post(
+        `${API}/upload?voice=${encodeURIComponent(selectedVoice)}&language=${encodeURIComponent(selectedLang)}&audio_mode=${encodeURIComponent(selectedMode)}`,
+        fd,
+        { headers: { "Content-Type": "multipart/form-data" } }
+      );
       toast.success("Video yüklendi, işleme başlandı.");
       const id = r.data.job_id;
       const initial = await axios.get(`${API}/job/${id}`);
@@ -146,9 +150,10 @@ export default function DubbingStudio() {
   useEffect(() => {
     fetchVoices();
     fetchLanguages();
+    fetchAudioModes();
     fetchHistory();
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchVoices, fetchLanguages, fetchHistory]);
+  }, [fetchVoices, fetchLanguages, fetchAudioModes, fetchHistory]);
 
   const reopenJob = async (id) => {
     const r = await axios.get(`${API}/job/${id}`);
@@ -228,6 +233,12 @@ export default function DubbingStudio() {
                 languages={languages}
                 value={selectedLang}
                 onChange={setSelectedLang}
+                disabled={uploading || (job && job.status === "running")}
+              />
+              <AudioModeSelector
+                modes={audioModes}
+                value={selectedMode}
+                onChange={setSelectedMode}
                 disabled={uploading || (job && job.status === "running")}
               />
               <VoiceSelector
@@ -355,6 +366,30 @@ export default function DubbingStudio() {
   );
 }
 
+/* ---------- Audio mode select ---------- */
+function AudioModeSelector({ modes, value, onChange, disabled }) {
+  const current = modes.find((m) => m.id === value);
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-xs uppercase tracking-[0.18em] text-muted">Ses Modu</label>
+      <select
+        data-testid="audio-mode-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        title={current?.description || ""}
+        className="bg-[#1A1A1A] border border-[#27272A] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#E63946] min-w-[210px]"
+      >
+        {modes.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 /* ---------- Voice select ---------- */
 function VoiceSelector({ voices, value, onChange, disabled }) {
   return (
@@ -455,6 +490,7 @@ function ResultsView({ job }) {
           <div className="text-xs text-muted">
             {job.duration ? `${job.duration.toFixed(1)} sn` : "—"} · {job.voice}
             {job.detected_language ? ` · ${langLabel(job.detected_language)}` : ""}
+            {job.audio_mode ? ` · ${audioModeLabel(job.audio_mode)}` : ""}
           </div>
           <a
             href={isDone ? downloadHref : "#"}
@@ -496,4 +532,13 @@ const LANG_LABELS = {
 function langLabel(code) {
   if (!code) return "";
   return LANG_LABELS[code] || code.toUpperCase();
+}
+
+const AUDIO_MODE_LABELS = {
+  dub_only: "Sadece Türkçe",
+  dub_with_music: "Türkçe + Müzik",
+  dub_with_original: "Türkçe + Orijinal",
+};
+function audioModeLabel(id) {
+  return AUDIO_MODE_LABELS[id] || id;
 }

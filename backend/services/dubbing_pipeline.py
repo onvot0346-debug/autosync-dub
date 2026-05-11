@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, List, Dict, Optional
 
@@ -147,9 +148,14 @@ def separate_vocals(input_wav: Path, work_dir: Path) -> Dict[str, Path]:
     out_dir = work_dir / "demucs"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Use our custom subprocess runner which patches demucs to work with our env
+    runner = Path(__file__).parent / "demucs_runner.py"
+    # Use sys.executable to ensure we run with the SAME Python (venv) — supervisor
+    # may launch backend with a different /usr/bin/python that lacks deps.
+    py_exec = sys.executable or "python"
     try:
         _run([
-            "python", "-m", "demucs.separate",
+            py_exec, str(runner),
             "--two-stems", "vocals",
             "-n", "htdemucs",
             "-o", str(out_dir),
@@ -158,10 +164,13 @@ def separate_vocals(input_wav: Path, work_dir: Path) -> Dict[str, Path]:
         # demucs writes to <out>/<model>/<stem>/{vocals.wav,no_vocals.wav}
         stem = input_wav.stem
         produced = out_dir / "htdemucs" / stem
-        return {
-            "vocals": produced / "vocals.wav",
-            "music": produced / "no_vocals.wav",
-        }
+        vocals = produced / "vocals.wav"
+        music = produced / "no_vocals.wav"
+        if vocals.exists() and music.exists():
+            log.info("Demucs separation succeeded for %s", input_wav.name)
+            return {"vocals": vocals, "music": music}
+        log.warning("Demucs ran but expected files missing — falling back")
+        raise FileNotFoundError("demucs outputs missing")
     except Exception as e:
         log.warning(f"Demucs failed ({e}). Using original audio as fallback (no separation).")
         # Pragmatic fallback: use original audio for transcription, and a
@@ -363,20 +372,37 @@ def mix_and_mux(
     out_video: Path,
     music_db: float = -3.0,
     voice_db: float = 0.0,
+    audio_mode: str = "dub_with_music",  # "dub_only" | "dub_with_music" | "dub_with_original"
 ):
-    # Use a per-job mixed file inside the music_wav's directory (work_dir),
-    # NOT a shared name in OUTPUT_DIR (concurrent jobs collide!).
+    """audio_mode:
+      - 'dub_only'         → final audio is ONLY the Turkish dub (silent background).
+      - 'dub_with_music'   → Turkish dub + (music_wav after demucs/source separation).
+      - 'dub_with_original'→ Turkish dub mixed on top of original audio (no separation).
+    """
+    # Use a per-job mixed file inside the work_dir (no cross-job collisions).
     mixed_wav = music_wav.parent / "mixed_audio.wav"
-    # Mix two tracks with ffmpeg
-    _run([
-        FFMPEG_BIN, "-y",
-        "-i", str(music_wav),
-        "-i", str(turkish_vocal_wav),
-        "-filter_complex",
-        f"[0:a]volume={music_db}dB[m];[1:a]volume={voice_db}dB[v];[m][v]amix=inputs=2:duration=longest:dropout_transition=0[a]",
-        "-map", "[a]",
-        str(mixed_wav),
-    ])
+
+    if audio_mode == "dub_only":
+        # Skip music entirely — just use the Turkish vocal track.
+        # We still pass it through ffmpeg to make sure the format is uniform.
+        _run([
+            FFMPEG_BIN, "-y", "-i", str(turkish_vocal_wav),
+            "-filter:a", f"volume={voice_db}dB",
+            "-ar", "44100", "-ac", "2",
+            str(mixed_wav),
+        ])
+    else:
+        # dub_with_music or dub_with_original — both amix two tracks.
+        _run([
+            FFMPEG_BIN, "-y",
+            "-i", str(music_wav),
+            "-i", str(turkish_vocal_wav),
+            "-filter_complex",
+            f"[0:a]volume={music_db}dB[m];[1:a]volume={voice_db}dB[v];[m][v]amix=inputs=2:duration=longest:dropout_transition=0[a]",
+            "-map", "[a]",
+            str(mixed_wav),
+        ])
+
     # Mux into video (re-encode audio to AAC for max MP4 compatibility)
     _run([
         FFMPEG_BIN, "-y",
@@ -412,11 +438,13 @@ def run_pipeline(
     progress_cb: Callable[[str, int, Optional[str]], None],
     voice: str = TTS_VOICE,
     language: Optional[str] = "auto",
+    audio_mode: str = "dub_with_music",
 ) -> Dict:
     """Run the full pipeline. progress_cb(stage, percent, message).
 
     Args:
-        language: ISO-639-1 code (zh, vi, en, ko, ja, ...) or "auto" for detection.
+        language: ISO-639-1 code (zh, vi, en, ko, ja, ...) or "auto".
+        audio_mode: 'dub_only' (sadece Türkçe) | 'dub_with_music' (Türkçe+müzik) | 'dub_with_original' (Türkçe+orijinal).
     """
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -424,12 +452,28 @@ def run_pipeline(
     audio_wav = extract_audio(video_path, work_dir / "audio.wav")
     duration = get_video_duration(video_path)
 
-    progress_cb("separate", 15, "Vokal ve müzik ayrıştırılıyor")
-    stems = separate_vocals(audio_wav, work_dir)
+    # If user picked dub_with_original we can skip the slow demucs step:
+    # the "music" track is just the original audio.
+    if audio_mode == "dub_with_original":
+        progress_cb("separate", 15, "Orijinal ses kullanılıyor (ayrıştırma atlandı)")
+        original_lower = work_dir / "music.wav"
+        _run([
+            FFMPEG_BIN, "-y", "-i", str(audio_wav),
+            "-af", "volume=-10dB", "-c:a", "pcm_s16le", str(original_lower),
+        ])
+        stems = {"vocals": audio_wav, "music": original_lower}
+    elif audio_mode == "dub_only":
+        # No need for music — but we still need vocals.wav for transcription.
+        # Skip demucs entirely, use raw audio for transcription.
+        progress_cb("separate", 15, "Vokal ayrıştırma atlandı (sadece dublaj modu)")
+        stems = {"vocals": audio_wav, "music": audio_wav}  # music unused
+    else:
+        # dub_with_music — full demucs separation
+        progress_cb("separate", 15, "Vokal ve müzik ayrıştırılıyor (Demucs)")
+        stems = separate_vocals(audio_wav, work_dir)
 
     lang_label = "otomatik algılanıyor" if (not language or language == "auto") else language.upper()
     progress_cb("transcribe", 35, f"Konuşma metne dökülüyor ({lang_label})")
-    # Only use Chinese-tech initial prompt if user explicitly chose Chinese
     initial_prompt = None
     if language == "zh":
         initial_prompt = "以下是普通话的句子。包含工程、机械、电气、软件、算法等技术术语。请使用简体字。"
@@ -446,12 +490,14 @@ def run_pipeline(
     turkish_vocal = synthesize_turkish_track(segments, work_dir, duration, voice=voice)
 
     progress_cb("mux", 90, "Video birleştiriliyor")
-    mix_and_mux(video_path, stems["music"], turkish_vocal, out_video)
+    mix_and_mux(video_path, stems["music"], turkish_vocal, out_video,
+                audio_mode=audio_mode)
 
     progress_cb("done", 100, "Tamamlandı")
     return {
         "duration": duration,
         "detected_language": detected_language,
+        "audio_mode": audio_mode,
         "segments": [
             {"id": s["id"], "start": s["start"], "end": s["end"],
              "text_src": s.get("text_src") or s.get("text_zh", ""),

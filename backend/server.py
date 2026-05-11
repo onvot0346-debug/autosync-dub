@@ -64,6 +64,7 @@ class Job(BaseModel):
     voice: str = TTS_VOICE
     language: str = "auto"          # user-requested source language
     detected_language: str = ""     # whisper-detected language (after transcription)
+    audio_mode: str = "dub_with_music"  # dub_only | dub_with_music | dub_with_original
     duration: float = 0.0
     segments: List[Segment] = Field(default_factory=list)
     output_url: Optional[str] = None
@@ -107,7 +108,8 @@ async def _get_job(job_id: str) -> Optional[Job]:
 # ------------------------------------------------------------------
 # Background processing
 # ------------------------------------------------------------------
-def _process_job_sync(job_id: str, video_path: str, voice: str, language: str = "auto"):
+def _process_job_sync(job_id: str, video_path: str, voice: str,
+                      language: str = "auto", audio_mode: str = "dub_with_music"):
     """Runs in a thread (BackgroundTasks). Uses sync MongoDB via pymongo."""
     from pymongo import MongoClient
     sync_client = MongoClient(os.environ["MONGO_URL"])
@@ -141,6 +143,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str, language: str = 
             progress_cb=update,
             voice=voice,
             language=language,
+            audio_mode=audio_mode,
         )
         sync_db.jobs.update_one(
             {"id": job_id},
@@ -207,12 +210,26 @@ async def list_languages():
     return {"languages": SUPPORTED_LANGUAGES, "default": "auto"}
 
 
+@api_router.get("/audio-modes")
+async def list_audio_modes():
+    """Available audio output modes."""
+    return {
+        "modes": [
+            {"id": "dub_only",          "name": "Sadece Türkçe Dublaj",       "description": "Orijinal ses tamamen kaldırılır; arka plan müziği duyulmaz."},
+            {"id": "dub_with_music",    "name": "Türkçe + Arka Plan Müziği",  "description": "Konuşma yapay zekâ ile ayrıştırılır, müzik korunur."},
+            {"id": "dub_with_original", "name": "Türkçe + Orijinal Ses",      "description": "Türkçe dublaj orijinal sesin üzerine eklenir (orijinal hafif duyulur)."},
+        ],
+        "default": "dub_with_music",
+    }
+
+
 @api_router.post("/upload")
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     voice: str = TTS_VOICE,
     language: str = "auto",
+    audio_mode: str = "dub_with_music",
 ):
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXT:
@@ -222,8 +239,11 @@ async def upload_video(
     valid_codes = {lng["code"] for lng in SUPPORTED_LANGUAGES}
     if language not in valid_codes:
         language = "auto"
+    if audio_mode not in {"dub_only", "dub_with_music", "dub_with_original"}:
+        audio_mode = "dub_with_music"
 
     job = Job(filename=file.filename, voice=voice, language=language,
+              audio_mode=audio_mode,
               status="queued", stage="queued",
               progress=0, message="Yükleme alındı")
     save_path = UPLOAD_DIR / f"{job.id}{ext}"
@@ -231,8 +251,8 @@ async def upload_video(
         shutil.copyfileobj(file.file, f)
 
     await _save_job(job)
-    background_tasks.add_task(_process_job_sync, job.id, str(save_path), voice, language)
-    return {"job_id": job.id, "status": job.status, "language": language}
+    background_tasks.add_task(_process_job_sync, job.id, str(save_path), voice, language, audio_mode)
+    return {"job_id": job.id, "status": job.status, "language": language, "audio_mode": audio_mode}
 
 
 @api_router.get("/job/{job_id}")
@@ -324,6 +344,28 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def mark_stale_jobs_on_startup():
+    """If container/backend restarted while a job was running, mark it as
+    'error' so the user sees a clear state instead of forever-stuck."""
+    try:
+        result = await db.jobs.update_many(
+            {"status": {"$in": ["queued", "running"]}},
+            {"$set": {
+                "status": "error",
+                "stage": "error",
+                "message": "Sunucu yeniden başlatıldı — lütfen tekrar yükleyin.",
+                "error": "Server restarted during processing.",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        if result.modified_count:
+            logger.warning("Marked %d stale running jobs as error on startup",
+                           result.modified_count)
+    except Exception as e:
+        logger.warning("Could not mark stale jobs: %s", e)
 
 
 @app.on_event("shutdown")
