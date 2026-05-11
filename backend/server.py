@@ -123,6 +123,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str):
             }},
         )
 
+    succeeded = False
     try:
         sync_db.jobs.update_one(
             {"id": job_id},
@@ -151,6 +152,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str):
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
+        succeeded = True
     except Exception as e:
         logging.exception("Job failed")
         sync_db.jobs.update_one(
@@ -165,13 +167,14 @@ def _process_job_sync(job_id: str, video_path: str, voice: str):
         )
     finally:
         sync_client.close()
-        # Auto-cleanup work dir to free disk (output + upload kept for download)
-        try:
-            work = WORK_DIR / job_id
-            if work.exists():
-                shutil.rmtree(work, ignore_errors=True)
-        except Exception:
-            pass
+        # Auto-cleanup work dir ONLY on success (keep on error for debugging)
+        if succeeded:
+            try:
+                work = WORK_DIR / job_id
+                if work.exists():
+                    shutil.rmtree(work, ignore_errors=True)
+            except Exception:
+                pass
 
 
 # ------------------------------------------------------------------

@@ -88,7 +88,13 @@ def _get_whisper():
 # ------------------------------------------------------------------
 def _run(cmd: List[str], **kwargs) -> subprocess.CompletedProcess:
     log.info("RUN: %s", " ".join(cmd))
-    return subprocess.run(cmd, check=True, capture_output=True, **kwargs)
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, **kwargs)
+    except subprocess.CalledProcessError as e:
+        stderr_tail = (e.stderr or b"").decode("utf-8", errors="replace")[-1500:]
+        log.error("Command failed (exit %s): %s\nSTDERR:\n%s",
+                  e.returncode, " ".join(cmd), stderr_tail)
+        raise
 
 
 # ------------------------------------------------------------------
@@ -97,7 +103,7 @@ def _run(cmd: List[str], **kwargs) -> subprocess.CompletedProcess:
 def extract_audio(video_path: Path, out_wav: Path) -> Path:
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     _run([
-        "ffmpeg", "-y", "-i", str(video_path),
+        FFMPEG_BIN, "-y", "-i", str(video_path),
         "-vn", "-ac", "2", "-ar", "44100",
         "-c:a", "pcm_s16le", str(out_wav),
     ])
@@ -296,8 +302,9 @@ def mix_and_mux(
     music_db: float = -3.0,
     voice_db: float = 0.0,
 ):
-    work = out_video.parent
-    mixed_wav = work / "mixed_audio.wav"
+    # Use a per-job mixed file inside the music_wav's directory (work_dir),
+    # NOT a shared name in OUTPUT_DIR (concurrent jobs collide!).
+    mixed_wav = music_wav.parent / "mixed_audio.wav"
     # Mix two tracks with ffmpeg
     _run([
         FFMPEG_BIN, "-y",
@@ -308,12 +315,13 @@ def mix_and_mux(
         "-map", "[a]",
         str(mixed_wav),
     ])
-    # Mux into video (replace audio)
+    # Mux into video (re-encode audio to AAC for max MP4 compatibility)
     _run([
         FFMPEG_BIN, "-y",
         "-i", str(original_video),
         "-i", str(mixed_wav),
         "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k",
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-shortest",
