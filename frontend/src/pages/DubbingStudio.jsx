@@ -70,6 +70,16 @@ export default function DubbingStudio() {
     }
   }, []);
 
+  const fetchAudioModes = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/audio-modes`);
+      setAudioModes(r.data.modes || []);
+      if (r.data.default) setSelectedMode(r.data.default);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
   const fetchHistory = useCallback(async () => {
     try {
       const r = await axios.get(`${API}/jobs`);
