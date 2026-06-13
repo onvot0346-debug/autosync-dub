@@ -13,7 +13,10 @@ from typing import List, Optional, Any
 import uuid
 from datetime import datetime, timezone
 
-from services.dubbing_pipeline import run_pipeline, TTS_VOICE, SUPPORTED_LANGUAGES
+from services.dubbing_pipeline import (
+    run_pipeline, TTS_VOICE, SUPPORTED_LANGUAGES,
+    TARGET_LANGUAGES, TARGET_LANG_CODES, voices_for, default_voice_for,
+)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -63,6 +66,7 @@ class Job(BaseModel):
     message: str = ""
     voice: str = TTS_VOICE
     language: str = "auto"          # user-requested source language
+    target_language: str = "tr"     # translation target
     detected_language: str = ""     # whisper-detected language (after transcription)
     audio_mode: str = "dub_with_music"  # dub_only | dub_with_music | dub_with_original
     duration: float = 0.0
@@ -109,7 +113,8 @@ async def _get_job(job_id: str) -> Optional[Job]:
 # Background processing
 # ------------------------------------------------------------------
 def _process_job_sync(job_id: str, video_path: str, voice: str,
-                      language: str = "auto", audio_mode: str = "dub_with_music"):
+                      language: str = "auto", audio_mode: str = "dub_with_music",
+                      target_language: str = "tr"):
     """Runs in a thread (BackgroundTasks). Uses sync MongoDB via pymongo."""
     from pymongo import MongoClient
     sync_client = MongoClient(os.environ["MONGO_URL"])
@@ -143,6 +148,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
             progress_cb=update,
             voice=voice,
             language=language,
+            target_language=target_language,
             audio_mode=audio_mode,
         )
         sync_db.jobs.update_one(
@@ -154,6 +160,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
                 "message": "Tamamlandı",
                 "duration": result["duration"],
                 "detected_language": result.get("detected_language", ""),
+                "target_language": result.get("target_language", target_language),
                 "segments": result["segments"],
                 "output_url": f"/api/job/{job_id}/download",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -193,15 +200,15 @@ async def root():
 
 
 @api_router.get("/voices")
-async def list_voices():
-    """Curated short list of Turkish edge-tts voices."""
-    return {
-        "voices": [
-            {"id": "tr-TR-AhmetNeural", "name": "Ahmet (Erkek)", "gender": "male"},
-            {"id": "tr-TR-EmelNeural",  "name": "Emel (Kadın)",  "gender": "female"},
-        ],
-        "default": TTS_VOICE,
-    }
+async def list_voices(target_lang: str = "tr"):
+    """Voices available for the requested target language."""
+    voices = voices_for(target_lang)
+    return {"voices": voices, "default": (voices[0]["id"] if voices else TTS_VOICE)}
+
+
+@api_router.get("/target-languages")
+async def list_target_languages():
+    return {"languages": TARGET_LANGUAGES, "default": "tr"}
 
 
 @api_router.get("/languages")
@@ -227,22 +234,29 @@ async def list_audio_modes():
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    voice: str = TTS_VOICE,
+    voice: str = "",
     language: str = "auto",
+    target_language: str = "tr",
     audio_mode: str = "dub_with_music",
 ):
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(400, f"Desteklenmeyen format: {ext}. Kabul edilen: {sorted(ALLOWED_EXT)}")
 
-    # Validate language code
+    # Validate language codes
     valid_codes = {lng["code"] for lng in SUPPORTED_LANGUAGES}
     if language not in valid_codes:
         language = "auto"
+    if target_language not in TARGET_LANG_CODES:
+        target_language = "tr"
     if audio_mode not in {"dub_only", "dub_with_music", "dub_with_original"}:
         audio_mode = "dub_with_music"
+    # Fallback to default voice for target language
+    if not voice:
+        voice = default_voice_for(target_language)
 
     job = Job(filename=file.filename, voice=voice, language=language,
+              target_language=target_language,
               audio_mode=audio_mode,
               status="queued", stage="queued",
               progress=0, message="Yükleme alındı")
@@ -251,8 +265,10 @@ async def upload_video(
         shutil.copyfileobj(file.file, f)
 
     await _save_job(job)
-    background_tasks.add_task(_process_job_sync, job.id, str(save_path), voice, language, audio_mode)
-    return {"job_id": job.id, "status": job.status, "language": language, "audio_mode": audio_mode}
+    background_tasks.add_task(_process_job_sync, job.id, str(save_path), voice,
+                               language, audio_mode, target_language)
+    return {"job_id": job.id, "status": job.status, "language": language,
+            "target_language": target_language, "audio_mode": audio_mode}
 
 
 @api_router.get("/job/{job_id}")
@@ -278,13 +294,48 @@ async def list_jobs():
     return {"items": items}
 
 
+def _cleanup_job_files(job_id: str):
+    """Remove all files + DB record for a job. Used after download to keep disk small."""
+    for ext in ALLOWED_EXT:
+        p = UPLOAD_DIR / f"{job_id}{ext}"
+        if p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    out = OUTPUT_DIR / f"{job_id}.mp4"
+    if out.exists():
+        try:
+            out.unlink()
+        except Exception:
+            pass
+    work = WORK_DIR / job_id
+    if work.exists():
+        shutil.rmtree(work, ignore_errors=True)
+
+
 @api_router.get("/job/{job_id}/download")
 async def download(job_id: str):
     out = OUTPUT_DIR / f"{job_id}.mp4"
     if not out.exists():
         raise HTTPException(404, "Çıktı henüz hazır değil")
-    return FileResponse(str(out), media_type="video/mp4",
-                        filename=f"dublaj_{job_id}.mp4")
+
+    # Auto-cleanup AFTER response is sent (saves disk on free hosting tiers)
+    from starlette.background import BackgroundTask
+
+    async def _purge():
+        _cleanup_job_files(job_id)
+        try:
+            await db.jobs.delete_one({"id": job_id})
+        except Exception:
+            pass
+
+    return FileResponse(
+        str(out),
+        media_type="video/mp4",
+        filename=f"dublaj_{job_id}.mp4",
+        background=BackgroundTask(_purge),
+    )
 
 
 @api_router.delete("/job/{job_id}")
@@ -293,17 +344,7 @@ async def delete_job(job_id: str):
     if not job:
         raise HTTPException(404, "İş bulunamadı")
     await db.jobs.delete_one({"id": job_id})
-    # cleanup files
-    for ext in ALLOWED_EXT:
-        p = UPLOAD_DIR / f"{job_id}{ext}"
-        if p.exists():
-            p.unlink()
-    out = OUTPUT_DIR / f"{job_id}.mp4"
-    if out.exists():
-        out.unlink()
-    work = WORK_DIR / job_id
-    if work.exists():
-        shutil.rmtree(work, ignore_errors=True)
+    _cleanup_job_files(job_id)
     return {"ok": True}
 
 
@@ -313,18 +354,15 @@ async def clear_error_jobs():
     cursor = db.jobs.find({"status": "error"}, {"_id": 0, "id": 1})
     ids = [d["id"] async for d in cursor]
     for jid in ids:
-        for ext in ALLOWED_EXT:
-            p = UPLOAD_DIR / f"{jid}{ext}"
-            if p.exists():
-                p.unlink()
-        out = OUTPUT_DIR / f"{jid}.mp4"
-        if out.exists():
-            out.unlink()
-        work = WORK_DIR / jid
-        if work.exists():
-            shutil.rmtree(work, ignore_errors=True)
+        _cleanup_job_files(jid)
     result = await db.jobs.delete_many({"status": "error"})
     return {"deleted": result.deleted_count}
+
+
+# Health-check endpoint (Render uses this)
+@app.get("/health")
+async def health():
+    return {"ok": True}
 
 
 # Include the router in the main app

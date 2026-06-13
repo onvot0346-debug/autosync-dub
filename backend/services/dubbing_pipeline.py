@@ -105,6 +105,80 @@ SUPPORTED_LANGUAGES: List[Dict[str, str]] = [
 _LANG_NAMES_TR = {lng["code"]: lng["name"] for lng in SUPPORTED_LANGUAGES}
 
 
+# ------------------------------------------------------------------
+# Target languages + Edge-TTS voice catalog per language
+# ------------------------------------------------------------------
+TARGET_VOICES: Dict[str, List[Dict[str, str]]] = {
+    "tr": [
+        {"id": "tr-TR-AhmetNeural", "name": "Ahmet (Erkek)", "gender": "male"},
+        {"id": "tr-TR-EmelNeural",  "name": "Emel (Kadın)",  "gender": "female"},
+    ],
+    "de": [
+        {"id": "de-DE-ConradNeural", "name": "Conrad (Erkek)", "gender": "male"},
+        {"id": "de-DE-KatjaNeural",  "name": "Katja (Kadın)",  "gender": "female"},
+    ],
+    "fr": [
+        {"id": "fr-FR-HenriNeural",  "name": "Henri (Erkek)",  "gender": "male"},
+        {"id": "fr-FR-DeniseNeural", "name": "Denise (Kadın)", "gender": "female"},
+    ],
+    "en": [
+        {"id": "en-US-GuyNeural",   "name": "Guy (Erkek US)",   "gender": "male"},
+        {"id": "en-US-JennyNeural", "name": "Jenny (Kadın US)", "gender": "female"},
+        {"id": "en-GB-RyanNeural",  "name": "Ryan (Erkek UK)",  "gender": "male"},
+    ],
+    "es": [
+        {"id": "es-ES-AlvaroNeural",  "name": "Álvaro (Erkek)",  "gender": "male"},
+        {"id": "es-ES-ElviraNeural",  "name": "Elvira (Kadın)",  "gender": "female"},
+    ],
+    "it": [
+        {"id": "it-IT-DiegoNeural", "name": "Diego (Erkek)", "gender": "male"},
+        {"id": "it-IT-ElsaNeural",  "name": "Elsa (Kadın)",  "gender": "female"},
+    ],
+    "pt": [
+        {"id": "pt-PT-DuarteNeural", "name": "Duarte (Erkek)", "gender": "male"},
+        {"id": "pt-BR-AntonioNeural","name": "Antonio (Erkek BR)","gender": "male"},
+    ],
+    "ru": [{"id": "ru-RU-DmitryNeural", "name": "Dmitry (Erkek)", "gender": "male"}],
+    "ja": [{"id": "ja-JP-KeitaNeural", "name": "Keita (Erkek)", "gender": "male"}],
+    "ko": [{"id": "ko-KR-InJoonNeural", "name": "InJoon (Erkek)", "gender": "male"}],
+    "zh": [{"id": "zh-CN-YunxiNeural", "name": "Yunxi (Erkek)", "gender": "male"}],
+    "ar": [{"id": "ar-SA-HamedNeural", "name": "Hamed (Erkek)", "gender": "male"}],
+    "nl": [{"id": "nl-NL-MaartenNeural", "name": "Maarten (Erkek)", "gender": "male"}],
+    "pl": [{"id": "pl-PL-MarekNeural", "name": "Marek (Erkek)", "gender": "male"}],
+    "vi": [{"id": "vi-VN-NamMinhNeural", "name": "NamMinh (Erkek)", "gender": "male"}],
+}
+
+TARGET_LANGUAGES: List[Dict[str, str]] = [
+    {"code": "tr", "name": "Türkçe",         "english": "Turkish"},
+    {"code": "de", "name": "Almanca",        "english": "German"},
+    {"code": "fr", "name": "Fransızca",      "english": "French"},
+    {"code": "en", "name": "İngilizce",      "english": "English"},
+    {"code": "es", "name": "İspanyolca",     "english": "Spanish"},
+    {"code": "it", "name": "İtalyanca",      "english": "Italian"},
+    {"code": "pt", "name": "Portekizce",     "english": "Portuguese"},
+    {"code": "ru", "name": "Rusça",          "english": "Russian"},
+    {"code": "ja", "name": "Japonca",        "english": "Japanese"},
+    {"code": "ko", "name": "Korece",         "english": "Korean"},
+    {"code": "zh", "name": "Çince",          "english": "Chinese (Simplified)"},
+    {"code": "ar", "name": "Arapça",         "english": "Arabic"},
+    {"code": "nl", "name": "Hollandaca",     "english": "Dutch"},
+    {"code": "pl", "name": "Lehçe",          "english": "Polish"},
+    {"code": "vi", "name": "Vietnamca",      "english": "Vietnamese"},
+]
+TARGET_LANG_CODES = {lng["code"] for lng in TARGET_LANGUAGES}
+
+
+def default_voice_for(target_lang: str) -> str:
+    voices = TARGET_VOICES.get(target_lang)
+    if voices:
+        return voices[0]["id"]
+    return TARGET_VOICES["tr"][0]["id"]
+
+
+def voices_for(target_lang: str) -> List[Dict[str, str]]:
+    return TARGET_VOICES.get(target_lang, TARGET_VOICES["tr"])
+
+
 def _get_whisper():
     global _whisper_model
     if _whisper_model is None:
@@ -239,7 +313,8 @@ _DEEP_LANG = {
 }
 
 
-def translate_segments(segments: List[Dict], source_lang: str = "auto") -> List[Dict]:
+def translate_segments(segments: List[Dict], source_lang: str = "auto",
+                       target_lang: str = "tr") -> List[Dict]:
     if not segments:
         return segments
 
@@ -247,13 +322,14 @@ def translate_segments(segments: List[Dict], source_lang: str = "auto") -> List[
     for s in segments:
         s.setdefault("text_tr", "")
 
-    # 1) Try GPT-4o whole-transcript pass (highest quality, any source language)
+    # 1) Try GPT-4o whole-transcript pass (highest quality, any direction)
     used_gpt = False
     try:
-        asyncio.run(translate_with_gpt4o(segments, source_lang=source_lang))
+        asyncio.run(translate_with_gpt4o(segments, source_lang=source_lang,
+                                         target_lang=target_lang))
         used_gpt = any(s.get("text_tr") for s in segments)
-        log.info("GPT-4o translation: %s segments translated (src=%s)",
-                 sum(1 for s in segments if s.get("text_tr")), source_lang)
+        log.info("GPT-4o translation: %s segments translated (%s→%s)",
+                 sum(1 for s in segments if s.get("text_tr")), source_lang, target_lang)
     except Exception as e:
         log.warning("GPT-4o translator threw: %s", e)
 
@@ -262,10 +338,11 @@ def translate_segments(segments: List[Dict], source_lang: str = "auto") -> List[
     if missing:
         log.info("Falling back to deep-translator for %d untranslated segments", len(missing))
         deep_src = _DEEP_LANG.get(source_lang, "auto")
+        deep_tgt = _DEEP_LANG.get(target_lang, "tr")
         try:
-            translator = GoogleTranslator(source=deep_src, target="tr")
+            translator = GoogleTranslator(source=deep_src, target=deep_tgt)
         except Exception:
-            translator = GoogleTranslator(source="auto", target="tr")
+            translator = GoogleTranslator(source="auto", target=deep_tgt)
         for seg in missing:
             src_text = seg.get("text_src") or seg.get("text_zh", "")
             try:
@@ -275,14 +352,16 @@ def translate_segments(segments: List[Dict], source_lang: str = "auto") -> List[
                 tr = ""
             seg["text_tr"] = tr
 
-    # 3) Apply glossary corrections (Chinese-only; harmless for other languages)
-    for seg in segments:
-        seg["text_tr"] = apply_glossary(
-            seg.get("text_src") or seg.get("text_zh", ""),
-            seg.get("text_tr", ""),
-        )
+    # 3) Apply glossary corrections (mostly Turkish-target; harmless for others)
+    if target_lang == "tr":
+        for seg in segments:
+            seg["text_tr"] = apply_glossary(
+                seg.get("text_src") or seg.get("text_zh", ""),
+                seg.get("text_tr", ""),
+            )
 
-    log.info("Translation complete (gpt4o_used=%s, src=%s)", used_gpt, source_lang)
+    log.info("Translation complete (gpt4o_used=%s, %s→%s)",
+             used_gpt, source_lang, target_lang)
     return segments
 
 
@@ -438,6 +517,7 @@ def run_pipeline(
     progress_cb: Callable[[str, int, Optional[str]], None],
     voice: str = TTS_VOICE,
     language: Optional[str] = "auto",
+    target_language: str = "tr",
     audio_mode: str = "dub_with_music",
 ) -> Dict:
     """Run the full pipeline. progress_cb(stage, percent, message).
@@ -483,10 +563,11 @@ def run_pipeline(
     log.info("Transcription complete: %d segments, detected_language=%s",
              len(segments), detected_language)
 
-    progress_cb("translate", 55, f"{_LANG_NAMES_TR.get(detected_language, detected_language)} → Türkçe çevriliyor")
-    segments = translate_segments(segments, source_lang=detected_language)
+    progress_cb("translate", 55, f"{_LANG_NAMES_TR.get(detected_language, detected_language)} → {_LANG_NAMES_TR.get(target_language, target_language)} çevriliyor")
+    segments = translate_segments(segments, source_lang=detected_language,
+                                  target_lang=target_language)
 
-    progress_cb("tts", 75, "Türkçe seslendirme oluşturuluyor")
+    progress_cb("tts", 75, "Seslendirme oluşturuluyor")
     turkish_vocal = synthesize_turkish_track(segments, work_dir, duration, voice=voice)
 
     progress_cb("mux", 90, "Video birleştiriliyor")
@@ -497,6 +578,7 @@ def run_pipeline(
     return {
         "duration": duration,
         "detected_language": detected_language,
+        "target_language": target_language,
         "audio_mode": audio_mode,
         "segments": [
             {"id": s["id"], "start": s["start"], "end": s["end"],

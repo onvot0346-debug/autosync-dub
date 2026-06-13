@@ -23,7 +23,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage
 log = logging.getLogger("dubbing.gpt_translator")
 
 
-SYSTEM_PROMPT_TEMPLATE = """You are a professional simultaneous-interpretation translator from {source_language_name} to Turkish, specialized in video dubbing for technical / repair / HVAC content.
+SYSTEM_PROMPT_TEMPLATE = """You are a professional simultaneous-interpretation translator from {source_language_name} to {target_language_name}, specialized in video dubbing for technical / repair / HVAC content.
 
 You will receive an array of transcribed segments from a {source_language_name} video. Each segment has:
   - id: integer
@@ -31,60 +31,18 @@ You will receive an array of transcribed segments from a {source_language_name} 
   - end: seconds (float)
   - text_src: the original {source_language_name} (may contain ASR / transcription errors — fix them using context!)
 
-Your task: produce a fluent, natural, high-quality Turkish translation suitable for spoken voice-over.
+Your task: produce a fluent, natural, high-quality {target_language_name} translation suitable for spoken voice-over.
 
 CRITICAL RULES:
 1. **Use the WHOLE transcript as context.** Disambiguate words and fix obvious ASR mistakes using surrounding context.
 
 2. **DOMAIN — HVAC / AC repair / refrigeration / appliance repair / electronics / mechanics.**
-   Translate the following kinds of terms with their CANONICAL Turkish equivalents:
+   Translate technical / repair terms using CANONICAL {target_language_name} equivalents (klima/AC/Klimaanlage/climatiseur; kompresör/compressor/Kompressor/compresseur; kondenser/condenser/Kondensator/condenseur; evaporatör/evaporator/Verdampfer/évaporateur; voltaj/voltage/Spannung/tension; kondansatör/capacitor/Kondensator/condensateur; sigorta/fuse/Sicherung/fusible; röle/relay/Relais/relais; ana kart/mainboard/Hauptplatine/carte mère; etc.). Pick the canonical professional term in the target language.
 
-   • HVAC / Klima:
-     air conditioner / 空调 / điều hòa / エアコン / 에어컨 → klima
-     refrigerator / 冰箱 / tủ lạnh / 冷蔵庫 / 냉장고 → buzdolabı
-     refrigerant / 制冷剂 / 雪种 / chất làm lạnh / 冷媒 / 냉매 → soğutucu akışkan (gaz)
-     R22 / R32 / R410A / R134a → keep as-is (gas codes)
-     compressor / 压缩机 / máy nén / コンプレッサー / 압축기 → kompresör
-     condenser / 冷凝器 / bộ ngưng tụ / 凝縮器 / 응축기 → kondenser (kondansatör değil!)
-     evaporator / 蒸发器 / dàn bay hơi / 蒸発器 / 증발기 → evaporatör
-     expansion valve / 膨胀阀 / van tiết lưu / 膨張弁 / 팽창밸브 → genleşme valfi
-     capillary tube / 毛细管 / ống mao dẫn / キャピラリー / 모세관 → kılcal boru
-     filter drier / 干燥过滤器 / phin lọc / フィルタードライヤー → filtre drayer
-     copper pipe / 铜管 / ống đồng / 銅管 / 동관 → bakır boru
-     gas charge / 加雪种 / 加氟 / nạp gas / ガスチャージ → gaz şarjı / gaz dolumu
-     vacuum / vacuuming / 抽真空 / hút chân không / 真空引き → vakum (çekmek)
-     manifold gauge / 表压 / đồng hồ áp suất / マニホールド → manometre / manifold
-     leak / leak test / 漏氟 / 漏 / rò rỉ / 漏れ / 누설 → kaçak / sızıntı testi
-     vacuum pump / 真空泵 / máy hút chân không / 真空ポンプ → vakum pompası
-     flare / 喇叭口 / loe ống / フレア → rakor (flare) / havşalama
-
-   • Electrical / repair:
-     PCB / mainboard / 主板 / bo mạch / 基板 / 메인보드 → ana kart (PCB)
-     capacitor / 电容 / tụ điện / コンデンサ / 콘덴서 → kondansatör
-     resistor / 电阻 → direnç
-     fuse / 保险丝 / cầu chì / ヒューズ → sigorta
-     contactor / 接触器 / công tắc tơ / コンタクタ → kontaktör
-     relay / 继电器 / rơ le / リレー → röle
-     multimeter / 万用表 / đồng hồ vạn năng / テスター → multimetre / avometre
-     voltage / 电压 / điện áp / 電圧 / 전압 → voltaj (gerilim)
-     current / 电流 / dòng điện / 電流 / 전류 → akım
-     resistance / 电阻 / điện trở / 抵抗 → direnç (Ω)
-     ground / earth / 接地 / tiếp đất / アース → toprak / topraklama
-     short circuit / 短路 / chập điện / ショート → kısa devre
-
-   • Mechanical / appliance:
-     motor / 电机 / mô tơ → motor / elektrik motoru
-     fan / 风机 / 风扇 / quạt / ファン / 팬 → fan
-     bearing / 轴承 / bạc đạn / ベアリング / 베어링 → rulman
-     screw / 螺丝 → vida; bolt / 螺栓 → cıvata
-     gasket / 垫片 / gioăng / パッキン → conta
-     washing machine / 洗衣机 / máy giặt → çamaşır makinesi
-     water heater / 热水器 → şofben / termosifon
-
-3. **Match speaking duration.** Each Turkish sentence's character count should be close to the spoken duration; don't add filler.
-4. **Natural Turkish.** Idiomatic, grammatically correct (vowel harmony, agglutination), proper punctuation, repair-shop register.
+3. **Match speaking duration.** Each target sentence's character count should be close to the spoken duration; don't add filler.
+4. **Natural target language.** Idiomatic, grammatically correct, proper punctuation, repair-shop register.
 5. **Numbers, units, model codes:** keep as-is (e.g. "R32", "220V", "5A", "1.5 ton").
-6. **Brand / part numbers / people / places:** keep original spelling unless a well-known Turkish form exists.
+6. **Brand / part numbers / people / places:** keep original spelling unless a well-known local form exists.
 7. **Output JSON ONLY.** No prose. No markdown. No code fences.
 
 OUTPUT FORMAT (return EXACTLY this JSON structure):
@@ -95,6 +53,8 @@ OUTPUT FORMAT (return EXACTLY this JSON structure):
     ...
   ]
 }}
+
+(The field is named `text_tr` for historical compatibility; it must contain the {target_language_name} translation.)
 
 If a segment is empty / pure noise, set text_tr to "".
 """
@@ -114,6 +74,10 @@ def _source_language_name(code: str) -> str:
     if not code or code == "auto":
         return "the source language (auto-detected)"
     return _LANG_NAME_MAP.get(code, code)
+
+
+def _target_language_name(code: str) -> str:
+    return _LANG_NAME_MAP.get(code or "tr", "Turkish")
 
 
 def _build_user_payload(segments: List[Dict]) -> str:
@@ -157,10 +121,11 @@ def _parse_response(raw: str) -> Dict[int, str]:
     return out
 
 
-async def translate_with_gpt4o(segments: List[Dict], source_lang: str = "auto") -> List[Dict]:
+async def translate_with_gpt4o(segments: List[Dict], source_lang: str = "auto",
+                                target_lang: str = "tr") -> List[Dict]:
     """In-place enrich segments with `text_tr` produced by GPT-4o.
     On failure: leave existing text_tr untouched (caller should fall back).
-    `source_lang` is an ISO-639-1 code (zh, vi, en, ...) or "auto".
+    `source_lang` / `target_lang` are ISO-639-1 codes (zh, vi, tr, de, fr, ...).
     """
     if not segments:
         return segments
@@ -170,7 +135,8 @@ async def translate_with_gpt4o(segments: List[Dict], source_lang: str = "auto") 
         return segments
 
     system_msg = SYSTEM_PROMPT_TEMPLATE.format(
-        source_language_name=_source_language_name(source_lang)
+        source_language_name=_source_language_name(source_lang),
+        target_language_name=_target_language_name(target_lang),
     )
 
     chat = LlmChat(

@@ -1,0 +1,52 @@
+# Render Blueprint — One-click deployment
+# Backend = Python web service, Frontend = static site.
+# All secrets / connection strings are provided via Render env vars
+# (NOT hardcoded in code).
+
+services:
+  # ----------------- BACKEND -----------------
+  - type: web
+    name: autosync-dub-backend
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: MONGO_URL
+        sync: false                # set in Render dashboard (your Atlas URI)
+      - key: DB_NAME
+        value: autosync_dub
+      - key: EMERGENT_LLM_KEY
+        sync: false                # OR set OPENAI_API_KEY instead
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: WHISPER_MODEL
+        value: base                # 'base' for free tier RAM; 'medium' if upgraded
+      - key: STORAGE_DIR
+        value: /var/data/dubbing
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    disk:
+      name: dubbing-storage
+      mountPath: /var/data/dubbing
+      sizeGB: 1                    # bumps to paid tier; free tier uses ephemeral /tmp
+
+  # ----------------- FRONTEND -----------------
+  - type: web
+    name: autosync-dub-frontend
+    runtime: static
+    plan: starter
+    region: frankfurt
+    buildCommand: cd frontend && yarn install && yarn build
+    staticPublishPath: ./frontend/build
+    autoDeploy: true
+    envVars:
+      - key: REACT_APP_BACKEND_URL
+        sync: false                # set to the backend service URL after first deploy
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

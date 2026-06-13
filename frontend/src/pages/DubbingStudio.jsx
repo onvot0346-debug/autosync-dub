@@ -37,9 +37,11 @@ const STAGES = [
 export default function DubbingStudio() {
   const [voices, setVoices] = useState([]);
   const [languages, setLanguages] = useState([]);
+  const [targetLanguages, setTargetLanguages] = useState([]);
   const [audioModes, setAudioModes] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState("tr-TR-AhmetNeural");
   const [selectedLang, setSelectedLang] = useState("auto");
+  const [selectedTargetLang, setSelectedTargetLang] = useState("tr");
   const [selectedMode, setSelectedMode] = useState("dub_with_music");
   const [job, setJob] = useState(null);
   const [history, setHistory] = useState([]);
@@ -50,11 +52,22 @@ export default function DubbingStudio() {
   const pollRef = useRef(null);
 
   // ---------- API ----------
-  const fetchVoices = useCallback(async () => {
+  const fetchVoices = useCallback(async (forTarget) => {
     try {
-      const r = await axios.get(`${API}/voices`);
+      const tgt = forTarget || "tr";
+      const r = await axios.get(`${API}/voices?target_lang=${encodeURIComponent(tgt)}`);
       setVoices(r.data.voices || []);
       if (r.data.default) setSelectedVoice(r.data.default);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  const fetchTargetLanguages = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/target-languages`);
+      setTargetLanguages(r.data.languages || []);
+      if (r.data.default) setSelectedTargetLang(r.data.default);
     } catch (e) {
       console.error(e);
     }
@@ -130,7 +143,7 @@ export default function DubbingStudio() {
     fd.append("file", file);
     try {
       const r = await axios.post(
-        `${API}/upload?voice=${encodeURIComponent(selectedVoice)}&language=${encodeURIComponent(selectedLang)}&audio_mode=${encodeURIComponent(selectedMode)}`,
+        `${API}/upload?voice=${encodeURIComponent(selectedVoice)}&language=${encodeURIComponent(selectedLang)}&target_language=${encodeURIComponent(selectedTargetLang)}&audio_mode=${encodeURIComponent(selectedMode)}`,
         fd,
         { headers: { "Content-Type": "multipart/form-data" } }
       );
@@ -217,7 +230,7 @@ export default function DubbingStudio() {
               Dublaj Stüdyosu
             </p>
             <h1 className="font-display text-3xl sm:text-4xl font-bold leading-tight">
-              Videoyu <span style={{ color: "#E63946" }}>Türkçe</span> Dublajla
+              Videoyu <span style={{ color: "#E63946" }}>İstediğin Dile</span> Dublajla
             </h1>
           </div>
         </div>
@@ -243,6 +256,14 @@ export default function DubbingStudio() {
                 languages={languages}
                 value={selectedLang}
                 onChange={setSelectedLang}
+                disabled={uploading || (job && job.status === "running")}
+                label="Kaynak Dil"
+                testId="language-select"
+              />
+              <TargetLanguageSelector
+                languages={targetLanguages}
+                value={selectedTargetLang}
+                onChange={setSelectedTargetLang}
                 disabled={uploading || (job && job.status === "running")}
               />
               <AudioModeSelector
@@ -293,7 +314,7 @@ export default function DubbingStudio() {
                   {uploading ? "Yükleniyor..." : "Video dosyasını buraya bırak veya tıkla"}
                 </p>
                 <p className="text-sm text-muted mt-1">
-                  Çince, Vietnamca, İngilizce ve 20+ dilde otomatik Türkçe dublaj.
+                  Çince, Vietnamca, İngilizce, Türkçe ve 20+ dilden istediğin dile otomatik dublaj.
                 </p>
               </div>
             </div>
@@ -422,13 +443,35 @@ function VoiceSelector({ voices, value, onChange, disabled }) {
   );
 }
 
-/* ---------- Language select ---------- */
-function LanguageSelector({ languages, value, onChange, disabled }) {
+/* ---------- Source Language select ---------- */
+function LanguageSelector({ languages, value, onChange, disabled, label = "Kaynak Dil", testId = "language-select" }) {
   return (
     <div className="flex flex-col gap-1">
-      <label className="text-xs uppercase tracking-[0.18em] text-muted">Kaynak Dil</label>
+      <label className="text-xs uppercase tracking-[0.18em] text-muted">{label}</label>
       <select
-        data-testid="language-select"
+        data-testid={testId}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="bg-[#1A1A1A] border border-[#27272A] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#E63946] min-w-[160px]"
+      >
+        {languages.map((lng) => (
+          <option key={lng.code} value={lng.code}>
+            {lng.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/* ---------- Target Language select ---------- */
+function TargetLanguageSelector({ languages, value, onChange, disabled }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-xs uppercase tracking-[0.18em] text-muted">Hedef Dil</label>
+      <select
+        data-testid="target-language-select"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
