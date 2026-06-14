@@ -1,12 +1,6 @@
 """
-Chinese video -> Turkish dubbed video pipeline.
-All processing is local / free (no API keys required):
-  - whisper (transcription)
-  - deep-translator (Google free translate)
-  - edge-tts (Microsoft Edge neural TTS)
-  - demucs (vocal/music separation, optional fallback to ffmpeg filter)
-  - librosa + soundfile (time-stretch)
-  - ffmpeg (audio/video muxing)
+Cok dilli video dublaj akisini (pipeline) yoneten ana servis dosyasi.
+Gecici dosyalari otomatik temizleyerek sunucu disk alanini korur.
 """
 from __future__ import annotations
 
@@ -33,17 +27,16 @@ from .gpt_translator import translate_with_gpt4o
 log = logging.getLogger("dubbing")
 
 # ------------------------------------------------------------------
-# Config
+# Konfigurasyon
 # ------------------------------------------------------------------
 WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "medium")
-TTS_VOICE = os.environ.get("TTS_VOICE", "tr-TR-AhmetNeural")  # professional male
+TTS_VOICE = os.environ.get("TTS_VOICE", "tr-TR-AhmetNeural")
 
 
 # ------------------------------------------------------------------
-# Resolve ffmpeg / ffprobe binaries (static-ffmpeg bundled, persistent in venv)
+# ffmpeg ve ffprobe araclarini bulma fonksiyonu
 # ------------------------------------------------------------------
 def _resolve_ffmpeg_binaries():
-    # Prefer system if available (faster startup), fall back to static-ffmpeg
     sys_ffmpeg = shutil.which("ffmpeg")
     sys_ffprobe = shutil.which("ffprobe")
     if sys_ffmpeg and sys_ffprobe:
@@ -51,19 +44,17 @@ def _resolve_ffmpeg_binaries():
     try:
         from static_ffmpeg import run as _sf
         ff, fp = _sf.get_or_fetch_platform_executables_else_raise()
-        # Make sure pydub also finds ffmpeg
         os.environ["PATH"] = os.path.dirname(ff) + os.pathsep + os.environ.get("PATH", "")
         return ff, fp
     except Exception as e:
-        log.error("Could not resolve ffmpeg/ffprobe: %s", e)
-        return "ffmpeg", "ffprobe"  # last-resort, will fail clearly later
+        log.error("ffmpeg/ffprobe cozumlenemedi: %s", e)
+        return "ffmpeg", "ffprobe"
 
 
 FFMPEG_BIN, FFPROBE_BIN = _resolve_ffmpeg_binaries()
-log.info(f"Using ffmpeg: {FFMPEG_BIN}")
-log.info(f"Using ffprobe: {FFPROBE_BIN}")
+log.info(f"Kullanilan ffmpeg: {FFMPEG_BIN}")
+log.info(f"Kullanilan ffprobe: {FFPROBE_BIN}")
 
-# Make sure pydub uses the same ffmpeg
 try:
     from pydub import AudioSegment as _AS
     _AS.converter = FFMPEG_BIN
@@ -72,67 +63,66 @@ try:
 except Exception:
     pass
 
-# Lazy-loaded model cache
 _whisper_model = None
 
 
 # ------------------------------------------------------------------
-# Supported source languages (Whisper ISO-639-1 codes + Turkish names)
+# Desteklenen kaynak diller
 # ------------------------------------------------------------------
 SUPPORTED_LANGUAGES: List[Dict[str, str]] = [
-    {"code": "auto", "name": "Otomatik Algıla"},
-    {"code": "zh", "name": "Çince"},
+    {"code": "auto", "name": "Otomatik Algila"},
+    {"code": "zh", "name": "Cince"},
     {"code": "vi", "name": "Vietnamca"},
-    {"code": "en", "name": "İngilizce"},
+    {"code": "en", "name": "Ingilizce"},
     {"code": "ja", "name": "Japonca"},
     {"code": "ko", "name": "Korece"},
-    {"code": "ru", "name": "Rusça"},
-    {"code": "ar", "name": "Arapça"},
-    {"code": "fa", "name": "Farsça"},
-    {"code": "hi", "name": "Hintçe"},
+    {"code": "ru", "name": "Rusca"},
+    {"code": "ar", "name": "Arapca"},
+    {"code": "fa", "name": "Farsca"},
+    {"code": "hi", "name": "Hintce"},
     {"code": "id", "name": "Endonezce"},
     {"code": "th", "name": "Tayca"},
-    {"code": "fr", "name": "Fransızca"},
+    {"code": "fr", "name": "Fransizca"},
     {"code": "de", "name": "Almanca"},
-    {"code": "es", "name": "İspanyolca"},
-    {"code": "it", "name": "İtalyanca"},
+    {"code": "es", "name": "Ispanyolca"},
+    {"code": "it", "name": "Italyanca"},
     {"code": "pt", "name": "Portekizce"},
     {"code": "nl", "name": "Hollandaca"},
-    {"code": "pl", "name": "Lehçe"},
+    {"code": "pl", "name": "Lehce"},
     {"code": "uk", "name": "Ukraynaca"},
-    {"code": "tr", "name": "Türkçe"},
+    {"code": "tr", "name": "Turkce"},
 ]
 _LANG_NAMES_TR = {lng["code"]: lng["name"] for lng in SUPPORTED_LANGUAGES}
 
 
 # ------------------------------------------------------------------
-# Target languages + Edge-TTS voice catalog per language
+# Hedef diller ve Edge-TTS ses kataloglari
 # ------------------------------------------------------------------
 TARGET_VOICES: Dict[str, List[Dict[str, str]]] = {
     "tr": [
         {"id": "tr-TR-AhmetNeural", "name": "Ahmet (Erkek)", "gender": "male"},
-        {"id": "tr-TR-EmelNeural",  "name": "Emel (Kadın)",  "gender": "female"},
+        {"id": "tr-TR-EmelNeural",  "name": "Emel (Kadin)",  "gender": "female"},
     ],
     "de": [
         {"id": "de-DE-ConradNeural", "name": "Conrad (Erkek)", "gender": "male"},
-        {"id": "de-DE-KatjaNeural",  "name": "Katja (Kadın)",  "gender": "female"},
+        {"id": "de-DE-KatjaNeural",  "name": "Katja (Kadin)",  "gender": "female"},
     ],
     "fr": [
         {"id": "fr-FR-HenriNeural",  "name": "Henri (Erkek)",  "gender": "male"},
-        {"id": "fr-FR-DeniseNeural", "name": "Denise (Kadın)", "gender": "female"},
+        {"id": "fr-FR-DeniseNeural", "name": "Denise (Kadin)", "gender": "female"},
     ],
     "en": [
         {"id": "en-US-GuyNeural",   "name": "Guy (Erkek US)",   "gender": "male"},
-        {"id": "en-US-JennyNeural", "name": "Jenny (Kadın US)", "gender": "female"},
+        {"id": "en-US-JennyNeural", "name": "Jenny (Kadin US)", "gender": "female"},
         {"id": "en-GB-RyanNeural",  "name": "Ryan (Erkek UK)",  "gender": "male"},
     ],
     "es": [
-        {"id": "es-ES-AlvaroNeural",  "name": "Álvaro (Erkek)",  "gender": "male"},
-        {"id": "es-ES-ElviraNeural",  "name": "Elvira (Kadın)",  "gender": "female"},
+        {"id": "es-ES-AlvaroNeural",  "name": "Alvaro (Erkek)",  "gender": "male"},
+        {"id": "es-ES-ElviraNeural",  "name": "Elvira (Kadin)",  "gender": "female"},
     ],
     "it": [
         {"id": "it-IT-DiegoNeural", "name": "Diego (Erkek)", "gender": "male"},
-        {"id": "it-IT-ElsaNeural",  "name": "Elsa (Kadın)",  "gender": "female"},
+        {"id": "it-IT-ElsaNeural",  "name": "Elsa (Kadin)",  "gender": "female"},
     ],
     "pt": [
         {"id": "pt-PT-DuarteNeural", "name": "Duarte (Erkek)", "gender": "male"},
@@ -149,20 +139,20 @@ TARGET_VOICES: Dict[str, List[Dict[str, str]]] = {
 }
 
 TARGET_LANGUAGES: List[Dict[str, str]] = [
-    {"code": "tr", "name": "Türkçe",         "english": "Turkish"},
+    {"code": "tr", "name": "Turkce",         "english": "Turkish"},
     {"code": "de", "name": "Almanca",        "english": "German"},
-    {"code": "fr", "name": "Fransızca",      "english": "French"},
-    {"code": "en", "name": "İngilizce",      "english": "English"},
-    {"code": "es", "name": "İspanyolca",     "english": "Spanish"},
-    {"code": "it", "name": "İtalyanca",      "english": "Italian"},
+    {"code": "fr", "name": "Fransizca",      "english": "French"},
+    {"code": "en", "name": "Ingilizce",      "english": "English"},
+    {"code": "es", "name": "Ispanyolca",     "english": "Spanish"},
+    {"code": "it", "name": "Italyanca",      "english": "Italian"},
     {"code": "pt", "name": "Portekizce",     "english": "Portuguese"},
-    {"code": "ru", "name": "Rusça",          "english": "Russian"},
+    {"code": "ru", "name": "Rusca",          "english": "Russian"},
     {"code": "ja", "name": "Japonca",        "english": "Japanese"},
     {"code": "ko", "name": "Korece",         "english": "Korean"},
-    {"code": "zh", "name": "Çince",          "english": "Chinese (Simplified)"},
-    {"code": "ar", "name": "Arapça",         "english": "Arabic"},
+    {"code": "zh", "name": "Cince",          "english": "Chinese (Simplified)"},
+    {"code": "ar", "name": "Arapca",         "english": "Arabic"},
     {"code": "nl", "name": "Hollandaca",     "english": "Dutch"},
-    {"code": "pl", "name": "Lehçe",          "english": "Polish"},
+    {"code": "pl", "name": "Lehce",          "english": "Polish"},
     {"code": "vi", "name": "Vietnamca",      "english": "Vietnamese"},
 ]
 TARGET_LANG_CODES = {lng["code"] for lng in TARGET_LANGUAGES}
@@ -182,27 +172,27 @@ def voices_for(target_lang: str) -> List[Dict[str, str]]:
 def _get_whisper():
     global _whisper_model
     if _whisper_model is None:
-        log.info(f"Loading whisper model: {WHISPER_MODEL_NAME}")
+        log.info(f"Whisper modeli yukleniyor: {WHISPER_MODEL_NAME}")
         _whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
     return _whisper_model
 
 
 # ------------------------------------------------------------------
-# Helpers
+# Komut calistirici yardimci fonksiyon
 # ------------------------------------------------------------------
 def _run(cmd: List[str], **kwargs) -> subprocess.CompletedProcess:
-    log.info("RUN: %s", " ".join(cmd))
+    log.info("CALISTIRILIYOR: %s", " ".join(cmd))
     try:
         return subprocess.run(cmd, check=True, capture_output=True, **kwargs)
     except subprocess.CalledProcessError as e:
         stderr_tail = (e.stderr or b"").decode("utf-8", errors="replace")[-1500:]
-        log.error("Command failed (exit %s): %s\nSTDERR:\n%s",
+        log.error("Komut basarisiz oldu (Kod: %s): %s\nHATA DETAYI:\n%s",
                   e.returncode, " ".join(cmd), stderr_tail)
         raise
 
 
 # ------------------------------------------------------------------
-# Stage 1 — Extract audio from video
+# Adim 1 — Videodan orijinal sesi cikarma
 # ------------------------------------------------------------------
 def extract_audio(video_path: Path, out_wav: Path) -> Path:
     out_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -215,17 +205,13 @@ def extract_audio(video_path: Path, out_wav: Path) -> Path:
 
 
 # ------------------------------------------------------------------
-# Stage 2 — Separate vocals from background music
+# Adim 2 — Vokal ve arka plan muzik sesini ayirma (Demucs)
 # ------------------------------------------------------------------
 def separate_vocals(input_wav: Path, work_dir: Path) -> Dict[str, Path]:
-    """Return paths to vocals.wav and accompaniment.wav"""
     out_dir = work_dir / "demucs"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use our custom subprocess runner which patches demucs to work with our env
     runner = Path(__file__).parent / "demucs_runner.py"
-    # Use sys.executable to ensure we run with the SAME Python (venv) — supervisor
-    # may launch backend with a different /usr/bin/python that lacks deps.
     py_exec = sys.executable or "python"
     try:
         _run([
@@ -235,25 +221,19 @@ def separate_vocals(input_wav: Path, work_dir: Path) -> Dict[str, Path]:
             "-o", str(out_dir),
             str(input_wav),
         ])
-        # demucs writes to <out>/<model>/<stem>/{vocals.wav,no_vocals.wav}
         stem = input_wav.stem
         produced = out_dir / "htdemucs" / stem
         vocals = produced / "vocals.wav"
         music = produced / "no_vocals.wav"
         if vocals.exists() and music.exists():
-            log.info("Demucs separation succeeded for %s", input_wav.name)
+            log.info("Demucs basariyla tamamlandi: %s", input_wav.name)
             return {"vocals": vocals, "music": music}
-        log.warning("Demucs ran but expected files missing — falling back")
-        raise FileNotFoundError("demucs outputs missing")
+        raise FileNotFoundError("Demucs cikti dosyalari bulunamadi")
     except Exception as e:
-        log.warning(f"Demucs failed ({e}). Using original audio as fallback (no separation).")
-        # Pragmatic fallback: use original audio for transcription, and a
-        # lowered-volume copy as the "music" track (we can't truly separate).
+        log.warning(f"Demucs hata verdi ({e}). Orijinal ses varsayilan olarak kullaniliyor.")
         vocals = work_dir / "vocals.wav"
         music = work_dir / "music.wav"
-        # Vocals = original (whisper handles speech-with-music decently)
         _run([FFMPEG_BIN, "-y", "-i", str(input_wav), "-c:a", "pcm_s16le", str(vocals)])
-        # Music track = original at -10dB so the new Turkish voice dominates the mix
         _run([
             FFMPEG_BIN, "-y", "-i", str(input_wav),
             "-af", "volume=-10dB",
@@ -263,14 +243,10 @@ def separate_vocals(input_wav: Path, work_dir: Path) -> Dict[str, Path]:
 
 
 # ------------------------------------------------------------------
-# Stage 3 — Transcribe speech with timestamps (segments)
-#   Supports auto language detection (language="auto" or None)
+# Adim 3 — Whisper ile sesi metne dokme
 # ------------------------------------------------------------------
 def transcribe_audio(vocals_wav: Path, language: Optional[str] = None,
                     initial_prompt: Optional[str] = None) -> Dict:
-    """Returns {"segments": [...], "language": "zh"|"vi"|...}.
-    If `language` is None or "auto", Whisper auto-detects.
-    """
     model = _get_whisper()
     kwargs = dict(
         verbose=False,
@@ -295,16 +271,14 @@ def transcribe_audio(vocals_wav: Path, language: Optional[str] = None,
     return {"segments": segments, "language": detected_lang}
 
 
-# Backward-compat alias (kept temporarily; unused after refactor)
+# Geriye donuk uyumluluk takma adi
 def transcribe_chinese(vocals_wav: Path) -> List[Dict]:
     return transcribe_audio(vocals_wav, language="zh")["segments"]
 
 
 # ------------------------------------------------------------------
-# Stage 4 — Translate each segment to Turkish (GPT-4o context-aware,
-# with deep-translator fallback). Source language is dynamic.
+# Adim 4 — Gemini ile ceviriyi yapma (Yedek olarak Google Translate)
 # ------------------------------------------------------------------
-# ISO-639-1 codes used by Whisper -> deep-translator equivalents
 _DEEP_LANG = {
     "zh": "zh-CN", "vi": "vi", "en": "en", "ko": "ko", "ja": "ja",
     "ru": "ru", "ar": "ar", "fr": "fr", "de": "de", "es": "es",
@@ -318,25 +292,24 @@ def translate_segments(segments: List[Dict], source_lang: str = "auto",
     if not segments:
         return segments
 
-    # Pre-fill text_tr empty so we can detect what GPT-4o filled
     for s in segments:
         s.setdefault("text_tr", "")
 
-    # 1) Try GPT-4o whole-transcript pass (highest quality, any direction)
     used_gpt = False
     try:
+        # translate_with_gpt4o fonksiyonumuz artik arka planda Gemini API kullanir
         asyncio.run(translate_with_gpt4o(segments, source_lang=source_lang,
                                          target_lang=target_lang))
         used_gpt = any(s.get("text_tr") for s in segments)
-        log.info("GPT-4o translation: %s segments translated (%s→%s)",
+        log.info("Gemini translation: %s segment cevrildi (%s->%s)",
                  sum(1 for s in segments if s.get("text_tr")), source_lang, target_lang)
     except Exception as e:
-        log.warning("GPT-4o translator threw: %s", e)
+        log.warning("Gemini cevirici hata verdi: %s", e)
 
-    # 2) Per-segment fallback for any still-empty entries
+    # Gemini'in bos biraktigi yerler olursa Google Translate ile tamamliyoruz
     missing = [s for s in segments if not s.get("text_tr") and (s.get("text_src") or s.get("text_zh", "")).strip()]
     if missing:
-        log.info("Falling back to deep-translator for %d untranslated segments", len(missing))
+        log.info("Eksik kalan %d segment icin ucretsiz Google Translate kullaniliyor", len(missing))
         deep_src = _DEEP_LANG.get(source_lang, "auto")
         deep_tgt = _DEEP_LANG.get(target_lang, "tr")
         try:
@@ -348,11 +321,11 @@ def translate_segments(segments: List[Dict], source_lang: str = "auto",
             try:
                 tr = translator.translate(src_text) or ""
             except Exception as e:
-                log.warning(f"Translate failed for seg {seg['id']}: {e}")
+                log.warning(f"Google Translate ceviri hatasi: {e}")
                 tr = ""
             seg["text_tr"] = tr
 
-    # 3) Apply glossary corrections (mostly Turkish-target; harmless for others)
+    # HVAC terimler sözlügünü sadece hedef dil Turkce ise uygula
     if target_lang == "tr":
         for seg in segments:
             seg["text_tr"] = apply_glossary(
@@ -360,13 +333,13 @@ def translate_segments(segments: List[Dict], source_lang: str = "auto",
                 seg.get("text_tr", ""),
             )
 
-    log.info("Translation complete (gpt4o_used=%s, %s→%s)",
+    log.info("Ceviri islemi tamamlandi (gemini_kullanildi=%s, %s->%s)",
              used_gpt, source_lang, target_lang)
     return segments
 
 
 # ------------------------------------------------------------------
-# Stage 5 — TTS each Turkish segment, then time-stretch to fit original duration
+# Adim 5 — Edge-TTS ses sentezi ve hiza uydurma (Time-stretch)
 # ------------------------------------------------------------------
 async def _tts_one(text: str, out_path: Path, voice: str = TTS_VOICE):
     communicate = edge_tts.Communicate(text=text, voice=voice, rate="+0%")
@@ -374,21 +347,17 @@ async def _tts_one(text: str, out_path: Path, voice: str = TTS_VOICE):
 
 
 def _time_stretch_to_duration(in_wav: Path, target_seconds: float, out_wav: Path):
-    """Time-stretch audio to exactly target_seconds using librosa."""
     y, sr = librosa.load(str(in_wav), sr=None, mono=True)
     cur_dur = len(y) / sr
     if cur_dur <= 0.05 or target_seconds <= 0.05:
         sf.write(str(out_wav), y, sr)
         return
-    # rate > 1 -> faster (shorter); rate < 1 -> slower (longer)
     rate = cur_dur / target_seconds
-    # clamp to keep speech intelligible
     rate = max(0.7, min(1.6, rate))
     try:
         y_stretched = librosa.effects.time_stretch(y, rate=rate)
     except Exception:
         y_stretched = y
-    # If still doesn't match target, pad / truncate
     target_samples = int(target_seconds * sr)
     if len(y_stretched) < target_samples:
         pad = np.zeros(target_samples - len(y_stretched), dtype=y_stretched.dtype)
@@ -404,36 +373,29 @@ def synthesize_turkish_track(
     total_duration_sec: float,
     voice: str = TTS_VOICE,
 ) -> Path:
-    """Generate a single WAV track containing all Turkish TTS segments
-    placed at the original timestamps."""
     seg_dir = work_dir / "tts_segments"
     seg_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) Generate raw TTS mp3 per segment
     async def _gen_all():
         for seg in segments:
             text = seg.get("text_tr") or ""
             seg_mp3 = seg_dir / f"seg_{seg['id']:04d}.mp3"
             if not text.strip():
-                # write a tiny silent placeholder
                 AudioSegment.silent(duration=10).export(seg_mp3, format="mp3")
             else:
                 await _tts_one(text, seg_mp3, voice=voice)
             seg["_tts_mp3"] = seg_mp3
     asyncio.run(_gen_all())
 
-    # 2) Time-stretch each to match original segment duration
     sr_target = 44100
     final = AudioSegment.silent(duration=int(total_duration_sec * 1000))
     for seg in segments:
         dur = max(0.1, seg["end"] - seg["start"])
         seg_wav = seg_dir / f"seg_{seg['id']:04d}.wav"
-        # convert mp3 -> wav
         AudioSegment.from_file(seg["_tts_mp3"]).set_frame_rate(sr_target).set_channels(1).export(seg_wav, format="wav")
         stretched = seg_dir / f"seg_{seg['id']:04d}_fit.wav"
         _time_stretch_to_duration(seg_wav, dur, stretched)
         piece = AudioSegment.from_wav(stretched)
-        # overlay at start time
         final = final.overlay(piece, position=int(seg["start"] * 1000))
 
     out_path = work_dir / "turkish_vocal.wav"
@@ -442,7 +404,7 @@ def synthesize_turkish_track(
 
 
 # ------------------------------------------------------------------
-# Stage 6 — Mix Turkish vocal + original music, then mux back into video
+# Adim 6 — Ses kanallarini birlestirme ve videoya gomme (Mux)
 # ------------------------------------------------------------------
 def mix_and_mux(
     original_video: Path,
@@ -451,19 +413,11 @@ def mix_and_mux(
     out_video: Path,
     music_db: float = -3.0,
     voice_db: float = 0.0,
-    audio_mode: str = "dub_with_music",  # "dub_only" | "dub_with_music" | "dub_with_original"
+    audio_mode: str = "dub_with_music",
 ):
-    """audio_mode:
-      - 'dub_only'         → final audio is ONLY the Turkish dub (silent background).
-      - 'dub_with_music'   → Turkish dub + (music_wav after demucs/source separation).
-      - 'dub_with_original'→ Turkish dub mixed on top of original audio (no separation).
-    """
-    # Use a per-job mixed file inside the work_dir (no cross-job collisions).
     mixed_wav = music_wav.parent / "mixed_audio.wav"
 
     if audio_mode == "dub_only":
-        # Skip music entirely — just use the Turkish vocal track.
-        # We still pass it through ffmpeg to make sure the format is uniform.
         _run([
             FFMPEG_BIN, "-y", "-i", str(turkish_vocal_wav),
             "-filter:a", f"volume={voice_db}dB",
@@ -471,7 +425,6 @@ def mix_and_mux(
             str(mixed_wav),
         ])
     else:
-        # dub_with_music or dub_with_original — both amix two tracks.
         _run([
             FFMPEG_BIN, "-y",
             "-i", str(music_wav),
@@ -482,7 +435,6 @@ def mix_and_mux(
             str(mixed_wav),
         ])
 
-    # Mux into video (re-encode audio to AAC for max MP4 compatibility)
     _run([
         FFMPEG_BIN, "-y",
         "-i", str(original_video),
@@ -498,7 +450,27 @@ def mix_and_mux(
 
 
 # ------------------------------------------------------------------
-# Pipeline orchestrator
+# Gecici Dosyalari Temizleme (Auto-Delete) Yardimci Fonksiyonu
+# ------------------------------------------------------------------
+def cleanup_temp_files(work_dir: Path, out_video: Path):
+    """Render disk alanini korumak icin gecici WAV ve MP3 dosyalarini tamamen temizler."""
+    try:
+        for item in work_dir.iterdir():
+            if item.is_file():
+                # Nihai video dosyasini kesinlikle silmiyoruz!
+                if item.resolve() != out_video.resolve():
+                    item.unlink()
+            elif item.is_dir():
+                # Eger cikti videosu bu klasorun icindeyse klasoru silme (guvenlik onlemi)
+                if not (out_video.resolve() == item.resolve() or out_video.resolve() in item.resolve().parents):
+                    shutil.rmtree(item)
+        log.info(f"Gecici calisma dosyaları temizlendi: {work_dir}")
+    except Exception as e:
+        log.warning(f"Gecici dosyalar temizlenirken hata olustu: {e}")
+
+
+# ------------------------------------------------------------------
+# Ana Akis Yoneticisi (Orchestrator)
 # ------------------------------------------------------------------
 def get_video_duration(video_path: Path) -> float:
     out = subprocess.run(
@@ -520,22 +492,14 @@ def run_pipeline(
     target_language: str = "tr",
     audio_mode: str = "dub_with_music",
 ) -> Dict:
-    """Run the full pipeline. progress_cb(stage, percent, message).
-
-    Args:
-        language: ISO-639-1 code (zh, vi, en, ko, ja, ...) or "auto".
-        audio_mode: 'dub_only' (sadece Türkçe) | 'dub_with_music' (Türkçe+müzik) | 'dub_with_original' (Türkçe+orijinal).
-    """
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    progress_cb("extract", 5, "Videodan ses çıkarılıyor")
+    progress_cb("extract", 5, "Videodan ses cikariliyor")
     audio_wav = extract_audio(video_path, work_dir / "audio.wav")
     duration = get_video_duration(video_path)
 
-    # If user picked dub_with_original we can skip the slow demucs step:
-    # the "music" track is just the original audio.
     if audio_mode == "dub_with_original":
-        progress_cb("separate", 15, "Orijinal ses kullanılıyor (ayrıştırma atlandı)")
+        progress_cb("separate", 15, "Orijinal ses kullaniliyor (ayristirma atlandi)")
         original_lower = work_dir / "music.wav"
         _run([
             FFMPEG_BIN, "-y", "-i", str(audio_wav),
@@ -543,38 +507,38 @@ def run_pipeline(
         ])
         stems = {"vocals": audio_wav, "music": original_lower}
     elif audio_mode == "dub_only":
-        # No need for music — but we still need vocals.wav for transcription.
-        # Skip demucs entirely, use raw audio for transcription.
-        progress_cb("separate", 15, "Vokal ayrıştırma atlandı (sadece dublaj modu)")
-        stems = {"vocals": audio_wav, "music": audio_wav}  # music unused
+        progress_cb("separate", 15, "Vokal ayristirma atlandi (sadece dublaj modu)")
+        stems = {"vocals": audio_wav, "music": audio_wav}
     else:
-        # dub_with_music — full demucs separation
-        progress_cb("separate", 15, "Vokal ve müzik ayrıştırılıyor (Demucs)")
+        progress_cb("separate", 15, "Vokal ve muzik ayristiriliyor (Demucs)")
         stems = separate_vocals(audio_wav, work_dir)
 
-    lang_label = "otomatik algılanıyor" if (not language or language == "auto") else language.upper()
-    progress_cb("transcribe", 35, f"Konuşma metne dökülüyor ({lang_label})")
+    lang_label = "otomatik algilaniyor" if (not language or language == "auto") else language.upper()
+    progress_cb("transcribe", 35, f"Konusma metne dokuluyor ({lang_label})")
     initial_prompt = None
     if language == "zh":
         initial_prompt = "以下是普通话的句子。包含工程、机械、电气、软件、算法等技术术语。请使用简体字。"
     tr_result = transcribe_audio(stems["vocals"], language=language, initial_prompt=initial_prompt)
     segments = tr_result["segments"]
     detected_language = tr_result["language"]
-    log.info("Transcription complete: %d segments, detected_language=%s",
+    log.info("Whisper desifre tamamlandi: %d segment, algilanan_dil=%s",
              len(segments), detected_language)
 
-    progress_cb("translate", 55, f"{_LANG_NAMES_TR.get(detected_language, detected_language)} → {_LANG_NAMES_TR.get(target_language, target_language)} çevriliyor")
+    progress_cb("translate", 55, f"{_LANG_NAMES_TR.get(detected_language, detected_language)} -> {_LANG_NAMES_TR.get(target_language, target_language)} cevriliyor")
     segments = translate_segments(segments, source_lang=detected_language,
                                   target_lang=target_language)
 
-    progress_cb("tts", 75, "Seslendirme oluşturuluyor")
+    progress_cb("tts", 75, "Seslendirme olusturuluyor")
     turkish_vocal = synthesize_turkish_track(segments, work_dir, duration, voice=voice)
 
-    progress_cb("mux", 90, "Video birleştiriliyor")
+    progress_cb("mux", 90, "Video birlestiriliyor")
     mix_and_mux(video_path, stems["music"], turkish_vocal, out_video,
                 audio_mode=audio_mode)
 
-    progress_cb("done", 100, "Tamamlandı")
+    # Render disk alanini korumak icin devasa WAV ve MP3 gecici dosyalarini hemen temizliyoruz
+    cleanup_temp_files(work_dir, out_video)
+
+    progress_cb("done", 100, "Tamamlandi")
     return {
         "duration": duration,
         "detected_language": detected_language,
