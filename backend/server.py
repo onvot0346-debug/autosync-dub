@@ -18,34 +18,34 @@ from services.dubbing_pipeline import (
     TARGET_LANGUAGES, TARGET_LANG_CODES, voices_for, default_voice_for,
 )
 
-
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
+# MongoDB Baglantisi
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Storage
+# Dosya Depolama Alanlari
 STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", "/data/dubbing"))
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 WORK_DIR = STORAGE_DIR / "work"
 OUTPUT_DIR = STORAGE_DIR / "outputs"
+
 for d in (UPLOAD_DIR, WORK_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 
-# Create the main app without a prefix
-app = FastAPI(title="Çince → Türkçe Dublaj Aracı")
+# Ana Uygulama Basligi
+app = FastAPI(title="Cok Dilli Dublaj Araci")
 
-# Create a router with the /api prefix
+# API Router Yapilandirmasi
 api_router = APIRouter(prefix="/api")
 
 
 # ------------------------------------------------------------------
-# Models
+# Veritabanı Modelleri
 # ------------------------------------------------------------------
 class Segment(BaseModel):
     id: int
@@ -65,10 +65,10 @@ class Job(BaseModel):
     progress: int = 0       # 0..100
     message: str = ""
     voice: str = TTS_VOICE
-    language: str = "auto"          # user-requested source language
-    target_language: str = "tr"     # translation target
-    detected_language: str = ""     # whisper-detected language (after transcription)
-    audio_mode: str = "dub_with_music"  # dub_only | dub_with_music | dub_with_original
+    language: str = "auto"          # kaynak dil
+    target_language: str = "tr"     # hedef dublaj dili
+    detected_language: str = ""     # whisper'in algiladigi dil
+    audio_mode: str = "dub_with_music"  # ses birlesim modu
     duration: float = 0.0
     segments: List[Segment] = Field(default_factory=list)
     output_url: Optional[str] = None
@@ -78,7 +78,7 @@ class Job(BaseModel):
 
 
 # ------------------------------------------------------------------
-# DB helpers
+# Veritabani Yardimci Fonksiyonlari
 # ------------------------------------------------------------------
 def _to_doc(job: Job) -> dict:
     doc = job.model_dump()
@@ -110,12 +110,12 @@ async def _get_job(job_id: str) -> Optional[Job]:
 
 
 # ------------------------------------------------------------------
-# Background processing
+# Arka Plan Is Akisi Yonetimi
 # ------------------------------------------------------------------
 def _process_job_sync(job_id: str, video_path: str, voice: str,
                       language: str = "auto", audio_mode: str = "dub_with_music",
                       target_language: str = "tr"):
-    """Runs in a thread (BackgroundTasks). Uses sync MongoDB via pymongo."""
+    """Arka planda calisan ana dublaj thread fonksiyonu."""
     from pymongo import MongoClient
     sync_client = MongoClient(os.environ["MONGO_URL"])
     sync_db = sync_client[os.environ["DB_NAME"]]
@@ -137,7 +137,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
         sync_db.jobs.update_one(
             {"id": job_id},
             {"$set": {"status": "running", "stage": "extract", "progress": 1,
-                      "message": "Başlatılıyor", "updated_at": datetime.now(timezone.utc).isoformat()}},
+                      "message": "Baslatiliyor", "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
         out_video = OUTPUT_DIR / f"{job_id}.mp4"
         result = run_pipeline(
@@ -157,7 +157,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
                 "status": "done",
                 "stage": "done",
                 "progress": 100,
-                "message": "Tamamlandı",
+                "message": "Tamamlandi",
                 "duration": result["duration"],
                 "detected_language": result.get("detected_language", ""),
                 "target_language": result.get("target_language", target_language),
@@ -168,20 +168,20 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
         )
         succeeded = True
     except Exception as e:
-        logging.exception("Job failed")
+        logging.exception("Is akisi sirasinda hata olustu")
         sync_db.jobs.update_one(
             {"id": job_id},
             {"$set": {
                 "status": "error",
                 "stage": "error",
-                "message": "Hata oluştu",
+                "message": "Hata olustu",
                 "error": f"{type(e).__name__}: {e}\n{traceback.format_exc()[:1500]}",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
     finally:
         sync_client.close()
-        # Auto-cleanup work dir ONLY on success (keep on error for debugging)
+        # Basarili olursa gecici klasorleri diskte yer kaplamamasi icin siliyoruz
         if succeeded:
             try:
                 work = WORK_DIR / job_id
@@ -192,16 +192,15 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
 
 
 # ------------------------------------------------------------------
-# Routes
+# API Yonlendirmeleri (Routes)
 # ------------------------------------------------------------------
 @api_router.get("/")
 async def root():
-    return {"name": "Çince → Türkçe Dublaj API", "status": "ok"}
+    return {"name": "Cok Dilli Dublaj API", "status": "ok"}
 
 
 @api_router.get("/voices")
 async def list_voices(target_lang: str = "tr"):
-    """Voices available for the requested target language."""
     voices = voices_for(target_lang)
     return {"voices": voices, "default": (voices[0]["id"] if voices else TTS_VOICE)}
 
@@ -213,18 +212,16 @@ async def list_target_languages():
 
 @api_router.get("/languages")
 async def list_languages():
-    """Supported source languages for transcription."""
     return {"languages": SUPPORTED_LANGUAGES, "default": "auto"}
 
 
 @api_router.get("/audio-modes")
 async def list_audio_modes():
-    """Available audio output modes."""
     return {
         "modes": [
-            {"id": "dub_only",          "name": "Sadece Türkçe Dublaj",       "description": "Orijinal ses tamamen kaldırılır; arka plan müziği duyulmaz."},
-            {"id": "dub_with_music",    "name": "Türkçe + Arka Plan Müziği",  "description": "Konuşma yapay zekâ ile ayrıştırılır, müzik korunur."},
-            {"id": "dub_with_original", "name": "Türkçe + Orijinal Ses",      "description": "Türkçe dublaj orijinal sesin üzerine eklenir (orijinal hafif duyulur)."},
+            {"id": "dub_only",          "name": "Sadece Dublaj",       "description": "Orijinal ses tamamen kaldirilir; arka plan muzigi duyulmaz."},
+            {"id": "dub_with_music",    "name": "Dublaj + Arka Plan Muzigi",  "description": "Konusma yapay zeka ile ayristirilir, muzik korunur."},
+            {"id": "dub_with_original", "name": "Dublaj + Orijinal Ses",      "description": "Yeni dublaj orijinal sesin uzerine eklenir (orijinal hafif duyulur)."},
         ],
         "default": "dub_with_music",
     }
@@ -243,7 +240,6 @@ async def upload_video(
     if ext not in ALLOWED_EXT:
         raise HTTPException(400, f"Desteklenmeyen format: {ext}. Kabul edilen: {sorted(ALLOWED_EXT)}")
 
-    # Validate language codes
     valid_codes = {lng["code"] for lng in SUPPORTED_LANGUAGES}
     if language not in valid_codes:
         language = "auto"
@@ -251,7 +247,6 @@ async def upload_video(
         target_language = "tr"
     if audio_mode not in {"dub_only", "dub_with_music", "dub_with_original"}:
         audio_mode = "dub_with_music"
-    # Fallback to default voice for target language
     if not voice:
         voice = default_voice_for(target_language)
 
@@ -259,14 +254,14 @@ async def upload_video(
               target_language=target_language,
               audio_mode=audio_mode,
               status="queued", stage="queued",
-              progress=0, message="Yükleme alındı")
+              progress=0, message="Yukleme alindi")
     save_path = UPLOAD_DIR / f"{job.id}{ext}"
     with save_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
 
     await _save_job(job)
     background_tasks.add_task(_process_job_sync, job.id, str(save_path), voice,
-                               language, audio_mode, target_language)
+                             language, audio_mode, target_language)
     return {"job_id": job.id, "status": job.status, "language": language,
             "target_language": target_language, "audio_mode": audio_mode}
 
@@ -275,7 +270,7 @@ async def upload_video(
 async def get_job(job_id: str):
     job = await _get_job(job_id)
     if not job:
-        raise HTTPException(404, "İş bulunamadı")
+        raise HTTPException(404, "Is bulunamadi")
     return job.model_dump()
 
 
@@ -288,14 +283,13 @@ async def list_jobs():
             d["created_at"] = datetime.fromisoformat(d["created_at"])
         if isinstance(d.get("updated_at"), str):
             d["updated_at"] = datetime.fromisoformat(d["updated_at"])
-        # strip heavy fields for list view
         d.pop("segments", None)
         items.append(d)
     return {"items": items}
 
 
 def _cleanup_job_files(job_id: str):
-    """Remove all files + DB record for a job. Used after download to keep disk small."""
+    """Islem bittiginde diskte artik kalan tum dosyalari temizler."""
     for ext in ALLOWED_EXT:
         p = UPLOAD_DIR / f"{job_id}{ext}"
         if p.exists():
@@ -318,9 +312,8 @@ def _cleanup_job_files(job_id: str):
 async def download(job_id: str):
     out = OUTPUT_DIR / f"{job_id}.mp4"
     if not out.exists():
-        raise HTTPException(404, "Çıktı henüz hazır değil")
+        raise HTTPException(404, "Cikti henuz hazir degil")
 
-    # Auto-cleanup AFTER response is sent (saves disk on free hosting tiers)
     from starlette.background import BackgroundTask
 
     async def _purge():
@@ -342,7 +335,7 @@ async def download(job_id: str):
 async def delete_job(job_id: str):
     job = await _get_job(job_id)
     if not job:
-        raise HTTPException(404, "İş bulunamadı")
+        raise HTTPException(404, "Is bulunamadi")
     await db.jobs.delete_one({"id": job_id})
     _cleanup_job_files(job_id)
     return {"ok": True}
@@ -350,7 +343,6 @@ async def delete_job(job_id: str):
 
 @api_router.post("/jobs/clear-errors")
 async def clear_error_jobs():
-    """Delete all errored jobs and their associated files. Returns count deleted."""
     cursor = db.jobs.find({"status": "error"}, {"_id": 0, "id": 1})
     ids = [d["id"] async for d in cursor]
     for jid in ids:
@@ -359,13 +351,12 @@ async def clear_error_jobs():
     return {"deleted": result.deleted_count}
 
 
-# Health-check endpoint (Render uses this)
+# Sunucu Saglik Kontrolu (Render'in istedigi yol)
 @app.get("/health")
 async def health():
     return {"ok": True}
 
 
-# Include the router in the main app
 app.include_router(api_router)
 
 app.add_middleware(
@@ -376,7 +367,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -386,24 +376,22 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def mark_stale_jobs_on_startup():
-    """If container/backend restarted while a job was running, mark it as
-    'error' so the user sees a clear state instead of forever-stuck."""
+    """Sunucu her yeniden basladiginda askida kalan islemleri hata durumuna ceker."""
     try:
         result = await db.jobs.update_many(
             {"status": {"$in": ["queued", "running"]}},
             {"$set": {
                 "status": "error",
                 "stage": "error",
-                "message": "Sunucu yeniden başlatıldı — lütfen tekrar yükleyin.",
+                "message": "Sunucu yeniden baslatildi - lutfen tekrar yukleyin.",
                 "error": "Server restarted during processing.",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
         if result.modified_count:
-            logger.warning("Marked %d stale running jobs as error on startup",
-                           result.modified_count)
+            logger.warning("Baslangicta askida kalan %d islem temizlendi", result.modified_count)
     except Exception as e:
-        logger.warning("Could not mark stale jobs: %s", e)
+        logger.warning("Askida kalan isler temizlenirken hata olustu: %s", e)
 
 
 @app.on_event("shutdown")
