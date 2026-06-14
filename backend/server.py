@@ -7,6 +7,7 @@ import os
 import shutil
 import logging
 import traceback
+import certifi  # SSL/TLS sertifika hatasını çözmek için ekledik
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any
@@ -18,15 +19,26 @@ from services.dubbing_pipeline import (
     TARGET_LANGUAGES, TARGET_LANG_CODES, voices_for, default_voice_for,
 )
 
+log = logging.getLogger("dubbing.server")
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB Baglantisi
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# --- MONGO_URL TEMİZLEME VE GÜVENLİK FİLTRESİ ---
+# Render panelinden girilen adreste görünmez boşluklar veya tırnak işaretleri varsa bunları temizler.
+mongo_url_raw = os.environ.get('MONGO_URL', '')
+mongo_url = mongo_url_raw.strip().strip("'").strip('"')
 
-# Dosya Depolama Alanlari
+# Eğer temizlendikten sonra hala doğru formatta değilse loglara uyarı basarız
+if not mongo_url.startswith("mongodb://") and not mongo_url.startswith("mongodb+srv://"):
+    safe_preview = mongo_url[:15] + "..." if mongo_url else "BOS"
+    log.error(f"Kritik Hata: MONGO_URL geçersiz formatta! Alınan değer: {safe_preview}")
+
+# MongoDB asenkron istemcisini certifi sertifika deposuyla başlatıyoruz (SSL Handshake hatasını çözer)
+client = AsyncIOMotorClient(mongo_url, tlsCAFile=certifi.where())
+db = client[os.environ.get('DB_NAME', 'dubbing_db')]
+
+# Dosya Depolama Alanları
 STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", "/data/dubbing"))
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 WORK_DIR = STORAGE_DIR / "work"
@@ -37,10 +49,10 @@ for d in (UPLOAD_DIR, WORK_DIR, OUTPUT_DIR):
 
 ALLOWED_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 
-# Ana Uygulama Basligi
-app = FastAPI(title="Cok Dilli Dublaj Araci")
+# Ana Uygulama Başlığı
+app = FastAPI(title="Çok Dilli Dublaj Aracı")
 
-# API Router Yapilandirmasi
+# API Router Yapılandırması
 api_router = APIRouter(prefix="/api")
 
 
@@ -67,8 +79,8 @@ class Job(BaseModel):
     voice: str = TTS_VOICE
     language: str = "auto"          # kaynak dil
     target_language: str = "tr"     # hedef dublaj dili
-    detected_language: str = ""     # whisper'in algiladigi dil
-    audio_mode: str = "dub_with_music"  # ses birlesim modu
+    detected_language: str = ""     # whisper'ın algıladığı dil
+    audio_mode: str = "dub_with_music"  # ses birleşim modu
     duration: float = 0.0
     segments: List[Segment] = Field(default_factory=list)
     output_url: Optional[str] = None
@@ -78,7 +90,7 @@ class Job(BaseModel):
 
 
 # ------------------------------------------------------------------
-# Veritabani Yardimci Fonksiyonlari
+# Veritabanı Yardımcı Fonksiyonları
 # ------------------------------------------------------------------
 def _to_doc(job: Job) -> dict:
     doc = job.model_dump()
@@ -110,15 +122,16 @@ async def _get_job(job_id: str) -> Optional[Job]:
 
 
 # ------------------------------------------------------------------
-# Arka Plan Is Akisi Yonetimi
+# Arka Plan İş Akışı Yönetimi
 # ------------------------------------------------------------------
 def _process_job_sync(job_id: str, video_path: str, voice: str,
                       language: str = "auto", audio_mode: str = "dub_with_music",
                       target_language: str = "tr"):
-    """Arka planda calisan ana dublaj thread fonksiyonu."""
+    """Arka planda çalışan ana dublaj fonksiyonu."""
     from pymongo import MongoClient
-    sync_client = MongoClient(os.environ["MONGO_URL"])
-    sync_db = sync_client[os.environ["DB_NAME"]]
+    # Senkron bağlantı için de certifi sertifikalarını kullanıyoruz
+    sync_client = MongoClient(mongo_url, tlsCAFile=certifi.where())
+    sync_db = sync_client[os.environ.get('DB_NAME', 'dubbing_db')]
 
     def update(stage: str, progress: int, message: Optional[str]):
         sync_db.jobs.update_one(
@@ -137,7 +150,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
         sync_db.jobs.update_one(
             {"id": job_id},
             {"$set": {"status": "running", "stage": "extract", "progress": 1,
-                      "message": "Baslatiliyor", "updated_at": datetime.now(timezone.utc).isoformat()}},
+                      "message": "Başlatılıyor", "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
         out_video = OUTPUT_DIR / f"{job_id}.mp4"
         result = run_pipeline(
@@ -157,7 +170,7 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
                 "status": "done",
                 "stage": "done",
                 "progress": 100,
-                "message": "Tamamlandi",
+                "message": "Tamamlandı",
                 "duration": result["duration"],
                 "detected_language": result.get("detected_language", ""),
                 "target_language": result.get("target_language", target_language),
@@ -168,20 +181,20 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
         )
         succeeded = True
     except Exception as e:
-        logging.exception("Is akisi sirasinda hata olustu")
+        logging.exception("İş akışı sırasında kritik hata oluştu")
         sync_db.jobs.update_one(
             {"id": job_id},
             {"$set": {
                 "status": "error",
                 "stage": "error",
-                "message": "Hata olustu",
+                "message": "Hata oluştu",
                 "error": f"{type(e).__name__}: {e}\n{traceback.format_exc()[:1500]}",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
     finally:
         sync_client.close()
-        # Basarili olursa gecici klasorleri diskte yer kaplamamasi icin siliyoruz
+        # Başarılı olursa geçici dosyaları diskten temizliyoruz
         if succeeded:
             try:
                 work = WORK_DIR / job_id
@@ -192,11 +205,11 @@ def _process_job_sync(job_id: str, video_path: str, voice: str,
 
 
 # ------------------------------------------------------------------
-# API Yonlendirmeleri (Routes)
+# API Yönlendirmeleri (Routes)
 # ------------------------------------------------------------------
 @api_router.get("/")
 async def root():
-    return {"name": "Cok Dilli Dublaj API", "status": "ok"}
+    return {"name": "Çok Dilli Dublaj API", "status": "ok"}
 
 
 @api_router.get("/voices")
@@ -219,9 +232,9 @@ async def list_languages():
 async def list_audio_modes():
     return {
         "modes": [
-            {"id": "dub_only",          "name": "Sadece Dublaj",       "description": "Orijinal ses tamamen kaldirilir; arka plan muzigi duyulmaz."},
-            {"id": "dub_with_music",    "name": "Dublaj + Arka Plan Muzigi",  "description": "Konusma yapay zeka ile ayristirilir, muzik korunur."},
-            {"id": "dub_with_original", "name": "Dublaj + Orijinal Ses",      "description": "Yeni dublaj orijinal sesin uzerine eklenir (orijinal hafif duyulur)."},
+            {"id": "dub_only",          "name": "Sadece Dublaj",       "description": "Orijinal ses tamamen kaldırılır; arka plan müziği duyulmaz."},
+            {"id": "dub_with_music",    "name": "Dublaj + Arka Plan Müziği",  "description": "Konuşma yapay zekâ ile ayrıştırılır, müzik korunur."},
+            {"id": "dub_with_original", "name": "Dublaj + Orijinal Ses",      "description": "Yeni dublaj orijinal sesin üzerine eklenir (orijinal hafif duyulur)."},
         ],
         "default": "dub_with_music",
     }
@@ -254,7 +267,7 @@ async def upload_video(
               target_language=target_language,
               audio_mode=audio_mode,
               status="queued", stage="queued",
-              progress=0, message="Yukleme alindi")
+              progress=0, message="Yükleme alındı")
     save_path = UPLOAD_DIR / f"{job.id}{ext}"
     with save_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -270,7 +283,7 @@ async def upload_video(
 async def get_job(job_id: str):
     job = await _get_job(job_id)
     if not job:
-        raise HTTPException(404, "Is bulunamadi")
+        raise HTTPException(404, "İş bulunamadı")
     return job.model_dump()
 
 
@@ -289,7 +302,7 @@ async def list_jobs():
 
 
 def _cleanup_job_files(job_id: str):
-    """Islem bittiginde diskte artik kalan tum dosyalari temizler."""
+    """İndirme tamamlandığında diskte artık kalan tüm büyük dosyaları temizler."""
     for ext in ALLOWED_EXT:
         p = UPLOAD_DIR / f"{job_id}{ext}"
         if p.exists():
@@ -312,7 +325,7 @@ def _cleanup_job_files(job_id: str):
 async def download(job_id: str):
     out = OUTPUT_DIR / f"{job_id}.mp4"
     if not out.exists():
-        raise HTTPException(404, "Cikti henuz hazir degil")
+        raise HTTPException(404, "Çıktı henüz hazır değil")
 
     from starlette.background import BackgroundTask
 
@@ -335,7 +348,7 @@ async def download(job_id: str):
 async def delete_job(job_id: str):
     job = await _get_job(job_id)
     if not job:
-        raise HTTPException(404, "Is bulunamadi")
+        raise HTTPException(404, "İş bulunamadı")
     await db.jobs.delete_one({"id": job_id})
     _cleanup_job_files(job_id)
     return {"ok": True}
@@ -351,7 +364,7 @@ async def clear_error_jobs():
     return {"deleted": result.deleted_count}
 
 
-# Sunucu Saglik Kontrolu (Render'in istedigi yol)
+# Sunucu Sağlık Kontrolü (Render'ın istediği hayati endpoint)
 @app.get("/health")
 async def health():
     return {"ok": True}
@@ -376,22 +389,22 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def mark_stale_jobs_on_startup():
-    """Sunucu her yeniden basladiginda askida kalan islemleri hata durumuna ceker."""
+    """Konteyner her ayağa kalktığında askıda kalan eski işlemleri temizler."""
     try:
         result = await db.jobs.update_many(
             {"status": {"$in": ["queued", "running"]}},
             {"$set": {
                 "status": "error",
                 "stage": "error",
-                "message": "Sunucu yeniden baslatildi - lutfen tekrar yukleyin.",
+                "message": "Sunucu yeniden başlatıldı — lütfen tekrar yükleyin.",
                 "error": "Server restarted during processing.",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
         if result.modified_count:
-            logger.warning("Baslangicta askida kalan %d islem temizlendi", result.modified_count)
+            logger.warning("Başlangıçta askıda kalan %d adet eski işlem temizlendi", result.modified_count)
     except Exception as e:
-        logger.warning("Askida kalan isler temizlenirken hata olustu: %s", e)
+        logger.warning("Askıda kalan işler temizlenirken hata oluştu: %s", e)
 
 
 @app.on_event("shutdown")
