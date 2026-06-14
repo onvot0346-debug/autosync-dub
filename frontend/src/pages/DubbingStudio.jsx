@@ -17,8 +17,10 @@ import {
   Film,
   Wand2,
 } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Button } from "@/components/ui/button";
+
+// REİS: HATA VEREN YERLER BURASIYDI, "../" OLARAK DÜZELTİLDİ.
+import { ScrollArea } from "../components/ui/scroll-area";
+import { Button } from "../components/ui/button";
 
 // process nesnesinin tanımsız olması durumunda çökmesini önlemek için güvenli kontrol
 const getBackendUrl = () => {
@@ -195,7 +197,7 @@ function HistoryList({ items, onOpen, onDelete }) {
 
 // ---------- ANA UYGULAMA BİLEŞENİ ----------
 
-export default function App() {
+export default function DubbingStudio() {
   const [voices, setVoices] = useState([]);
   const [languages, setLanguages] = useState([]);
   const [targetLanguages, setTargetLanguages] = useState([]);
@@ -484,7 +486,7 @@ export default function App() {
                   {uploading ? "Yükleniyor..." : "Video dosyasını buraya bırak veya tıkla"}
                 </p>
                 <p className="text-sm text-muted mt-1 text-zinc-400">
-                  Gemini AI ile Çince, Türkçe, İngilizce og 20+ dilden istediğin dile kusursuz dublaj.
+                  Gemini AI ile Çince, Türkçe, İngilizce ve 20+ dilden istediğin dile kusursuz dublaj.
                 </p>
               </div>
             </div>
