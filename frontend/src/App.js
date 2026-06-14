@@ -1,7 +1,7 @@
-import "@/App.css";
+import "./App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { Toaster } from "@/components/ui/sonner";
-import DubbingStudio from "@/pages/DubbingStudio";
+import { Toaster } from "./components/ui/sonner";
+import DubbingStudio from "./pages/DubbingStudio";
 
 function App() {
   return (
